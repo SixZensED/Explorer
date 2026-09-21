@@ -124,6 +124,11 @@ function runtimeadapter.new()
     self.request = type(request) == "function" and request or type(http_request) == "function" and http_request or (type(syn) == "table" and type(syn.request) == "function" and syn.request) or nil
     self.getcustomasset = type(getcustomasset) == "function" and getcustomasset or type(getsynasset) == "function" and getsynasset or nil
     self.protectgui = (type(syn) == "table" and type(syn.protect_gui) == "function" and syn.protect_gui) or (type(protectgui) == "function" and protectgui) or (type(protect_gui) == "function" and protect_gui) or nil
+    self.listfiles = type(listfiles) == "function" and listfiles or nil
+    self.fireclickdetector = type(fireclickdetector) == "function" and fireclickdetector or nil
+    self.fireproximityprompt = type(fireproximityprompt) == "function" and fireproximityprompt or nil
+    self.firetouchinterest = type(firetouchinterest) == "function" and firetouchinterest or nil
+    self.saveinstance = type(saveinstance) == "function" and saveinstance or type(savegame) == "function" and savegame or (type(syn) == "table" and type(syn.saveinstance) == "function" and syn.saveinstance) or nil
     return self
 end
 
@@ -245,21 +250,40 @@ function cachestore.XmlUnescape(s: string?): string?
         :gsub("&amp;", "&"))
 end
 
+local studioassetsources = {
+    {
+        Metadata = "https://raw.githubusercontent.com/SixZensED/Explorer/main/studio-assets/ReflectionMetadata.xml",
+        Icons = "https://raw.githubusercontent.com/SixZensED/Explorer/main/studio-assets/icons/",
+    },
+    {
+        Metadata = "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/ReflectionMetadata.xml",
+        Icons = "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/studio-svg-textures/Shared/InsertableObjects/Dark/Standard/",
+    },
+}
+
 function metadataprovider:LoadReflectionMetadata(): boolean
     local cachepath = "Explorer/reflection_metadata.xml"
     local raw = cachestore.Read(cachepath)
+    local fromcache = raw ~= nil
 
     if not raw then
-        raw = cachestore.HttpGet(
-            "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/ReflectionMetadata.xml"
-        )
+        for _, source in studioassetsources do
+            local body = cachestore.HttpGet(source.Metadata)
+
+            if body and body:find("ReflectionMetadataClass", 1, true) then
+                raw = body
+                break
+            end
+        end
     end
 
     if not raw then
         return false
     end
 
-    cachestore.Write(cachepath, raw)
+    if not fromcache then
+        cachestore.Write(cachepath, raw)
+    end
 
     local classes = {}
 
@@ -352,21 +376,44 @@ function metadataprovider:IsServiceClass(classname: string): boolean
 end
 
 function metadataprovider:Load(): boolean
-    local version = cachestore.HttpGet("https://setup.roblox.com/versionQTStudio")
+    local versionpath = "Explorer/api_version.txt"
+    local version = nil
+    local cachedversion = cachestore.Read(versionpath)
+
+    if cachedversion then
+        local stamp, cachedname = cachedversion:match("^(%d+)|(.+)$")
+
+        if stamp and cachedname and os.time() - tonumber(stamp) < 21600 then
+            version = cachedname
+        end
+    end
+
+    if not version then
+        local rawversion = cachestore.HttpGet("https://clientsettingscdn.roblox.com/v2/client-version/WindowsStudio64")
+
+        if rawversion then
+            local okversion, decodedversion = pcall(httpservice.JSONDecode, httpservice, rawversion)
+
+            if okversion
+                and type(decodedversion) == "table"
+                and type(decodedversion.clientVersionUpload) == "string"
+            then
+                version = decodedversion.clientVersionUpload
+                cachestore.Write(versionpath, tostring(os.time()) .. "|" .. version)
+            end
+        end
+    end
+
     if version then
-        version = runtimeutil.Trim(version)
         self.Version = version
     end
 
     local cachepath = "Explorer/api_" .. tostring(self.Version):gsub("[^%w%-_]", "_") .. ".json"
     local raw = cachestore.Read(cachepath)
+    local fromcache = raw ~= nil
 
     if not raw and version then
-        raw = cachestore.HttpGet("https://setup.roblox.com/" .. version .. "-API-Dump.json")
-    end
-
-    if not raw then
-        raw = cachestore.HttpGet("https://raw.githubusercontent.com/infyiff/backup/refs/heads/main/rbx_api.dat")
+        raw = cachestore.HttpGet("https://setup.rbxcdn.com/" .. version .. "-API-Dump.json")
     end
 
     if not raw then
@@ -380,7 +427,9 @@ function metadataprovider:Load(): boolean
         return false
     end
 
-    cachestore.Write(cachepath, raw)
+    if not fromcache then
+        cachestore.Write(cachepath, raw)
+    end
 
     local classes = {}
     for _, c in decoded.Classes or {} do
@@ -843,7 +892,7 @@ local topbar = uifactory.Create("Frame", {
 }, main)
 
 local title = uifactory.Text(topbar, "Explorer", 16)
-title.Size = UDim2.new(1, -88, 1, 0)
+title.Size = UDim2.new(1, -144, 1, 0)
 title.Position = UDim2.fromOffset(8, 0)
 title.TextColor3 = theme.Text
 title.Font = Enum.Font.Code
@@ -858,8 +907,8 @@ statuslabel.Size = UDim2.fromOffset(0, 0)
 
 local topbuttons = uifactory.Create("Frame", {
     BackgroundTransparency = 1,
-    Position = UDim2.new(1, -84, 0, 0),
-    Size = UDim2.fromOffset(84, 28),
+    Position = UDim2.new(1, -140, 0, 0),
+    Size = UDim2.fromOffset(140, 28),
 }, topbar)
 
 function dockcontroller.TitleButton(text, x, width)
@@ -880,13 +929,57 @@ function dockcontroller.TitleButton(text, x, width)
     return b
 end
 
+local settings = uifactory.Create("ImageButton", {
+    Name = "Settings",
+    AutoButtonColor = false,
+    BackgroundTransparency = 0,
+    BackgroundColor3 = Color3.fromRGB(34, 34, 34),
+    BorderSizePixel = 0,
+    Position = UDim2.fromOffset(28, 0),
+    Size = UDim2.fromOffset(28, 28),
+    Image = "",
+    ZIndex = topbuttons.ZIndex + 1,
+}, topbuttons)
+
+local settingsicon = uifactory.Create("ImageLabel", {
+    Name = "Icon",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(15, 15),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Image = "rbxassetid://100616958975023",
+    ImageColor3 = Color3.fromRGB(235, 235, 235),
+    ScaleType = Enum.ScaleType.Fit,
+    ZIndex = settings.ZIndex + 1,
+}, settings)
+
+settings.MouseEnter:Connect(function()
+    settings.BackgroundColor3 = Color3.fromRGB(50, 53, 59)
+    settingsicon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+end)
+
+settings.MouseLeave:Connect(function()
+    local active = settings:GetAttribute("Active") == true
+
+    settings.BackgroundColor3 =
+        active
+        and Color3.fromRGB(50, 53, 59)
+        or Color3.fromRGB(34, 34, 34)
+
+    settingsicon.ImageColor3 =
+        active
+        and theme.Accent
+        or Color3.fromRGB(235, 235, 235)
+end)
+
 local collapse = uifactory.Create("ImageButton", {
     Name = "Collapse",
     AutoButtonColor = false,
     BackgroundTransparency = 0,
-    BackgroundColor3 = Color3.fromRGB(33, 36, 41),
+    BackgroundColor3 = Color3.fromRGB(34, 34, 34),
     BorderSizePixel = 0,
-    Position = UDim2.fromOffset(0, 0),
+    Position = UDim2.fromOffset(56, 0),
     Size = UDim2.fromOffset(28, 28),
     Image = "",
     ZIndex = topbuttons.ZIndex + 1,
@@ -899,7 +992,7 @@ local collapseicon = uifactory.Create("ImageLabel", {
     Size = UDim2.fromOffset(15, 15),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    Image = "rbxassetid://71093547857106",
+    Image = "rbxassetid://95761527892880",
     ImageColor3 = Color3.fromRGB(235, 235, 235),
     ScaleType = Enum.ScaleType.Fit,
     ZIndex = collapse.ZIndex + 1,
@@ -911,7 +1004,7 @@ collapse.MouseEnter:Connect(function()
 end)
 
 collapse.MouseLeave:Connect(function()
-    collapse.BackgroundColor3 = Color3.fromRGB(33, 36, 41)
+    collapse.BackgroundColor3 = Color3.fromRGB(34, 34, 34)
     collapseicon.ImageColor3 = Color3.fromRGB(235, 235, 235)
 end)
 
@@ -919,9 +1012,9 @@ local docktop = uifactory.Create("ImageButton", {
     Name = "DockTop",
     AutoButtonColor = false,
     BackgroundTransparency = 0,
-    BackgroundColor3 = Color3.fromRGB(33, 36, 41),
+    BackgroundColor3 = Color3.fromRGB(34, 34, 34),
     BorderSizePixel = 0,
-    Position = UDim2.fromOffset(28, 0),
+    Position = UDim2.fromOffset(84, 0),
     Size = UDim2.fromOffset(28, 28),
     Image = "",
     ZIndex = topbuttons.ZIndex + 1,
@@ -934,7 +1027,7 @@ local dockicon = uifactory.Create("ImageLabel", {
     Size = UDim2.fromOffset(15, 15),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    Image = "rbxassetid://129039782394959",
+    Image = "rbxassetid://103869391243035",
     ImageColor3 = Color3.fromRGB(235, 235, 235),
     ScaleType = Enum.ScaleType.Fit,
     ZIndex = docktop.ZIndex + 1,
@@ -944,9 +1037,9 @@ local close = uifactory.Create("ImageButton", {
     Name = "Close",
     AutoButtonColor = false,
     BackgroundTransparency = 0,
-    BackgroundColor3 = Color3.fromRGB(33, 36, 41),
+    BackgroundColor3 = Color3.fromRGB(34, 34, 34),
     BorderSizePixel = 0,
-    Position = UDim2.fromOffset(56, 0),
+    Position = UDim2.fromOffset(112, 0),
     Size = UDim2.fromOffset(28, 28),
     Image = "",
     ZIndex = topbuttons.ZIndex + 1,
@@ -959,7 +1052,7 @@ local closeicon = uifactory.Create("ImageLabel", {
     Size = UDim2.fromOffset(15, 15),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    Image = "rbxassetid://103660394764868",
+    Image = "rbxassetid://108916834720941",
     ImageColor3 = Color3.fromRGB(235, 235, 235),
     ScaleType = Enum.ScaleType.Fit,
     ZIndex = close.ZIndex + 1,
@@ -971,7 +1064,7 @@ docktop.MouseEnter:Connect(function()
 end)
 
 docktop.MouseLeave:Connect(function()
-    docktop.BackgroundColor3 = Color3.fromRGB(33, 36, 41)
+    docktop.BackgroundColor3 = Color3.fromRGB(34, 34, 34)
     dockicon.ImageColor3 = Color3.fromRGB(235, 235, 235)
 end)
 
@@ -981,7 +1074,7 @@ close.MouseEnter:Connect(function()
 end)
 
 close.MouseLeave:Connect(function()
-    close.BackgroundColor3 = Color3.fromRGB(33, 36, 41)
+    close.BackgroundColor3 = Color3.fromRGB(34, 34, 34)
     closeicon.ImageColor3 = Color3.fromRGB(235, 235, 235)
 end)
 
@@ -1228,8 +1321,8 @@ local propertydropdownstate = {
     ActiveRow = nil,
 }
 
-local prop_canvas_min_w = 760
-local prop_name_w = 280
+local prop_canvas_min_w = 0
+local prop_name_w = 190
 
 function propertycontroller.GetCanvasWidth(): number
     return math.max(
@@ -1521,6 +1614,12 @@ toolactions.PropertyDropdownState = propertydropdownstate
 
 local selectednode: ExplorerNode?
 
+toolactions.Selection = {
+    Set = {},
+    List = {},
+    Anchor = nil,
+}
+
 toolactions.ViewerUI = {}
 
 toolactions.ViewerUI.Overlay = uifactory.Create("Frame", {
@@ -1591,7 +1690,7 @@ toolactions.ViewerUI.CloseIcon = uifactory.Create("ImageLabel", {
     Size = UDim2.fromOffset(18, 18),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    Image = "rbxassetid://103660394764868",
+    Image = "rbxassetid://108916834720941",
     ImageColor3 = Color3.fromRGB(220, 220, 220),
     ScaleType = Enum.ScaleType.Fit,
     ZIndex = 504,
@@ -2418,8 +2517,7 @@ toolactions.ViewerUI.SaveButton.MouseButton1Click:Connect(function()
     end
 
     local filename =
-        "Place_"
-        .. tostring(rawgame.PlaceId)
+        tostring(rawgame.PlaceId)
         .. "_Script_"
         .. tostring(os.time())
         .. ".txt"
@@ -3235,7 +3333,7 @@ function treecontroller.CreateRow(i: number)
         BorderSizePixel = 0,
         Text = "",
         TextColor3 = theme.Dim,
-        TextSize = 12,
+        TextSize = 8,
         Font = Enum.Font.SourceSans,
         FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
     }, row)
@@ -3276,7 +3374,7 @@ function treecontroller.CreateRow(i: number)
 
     row.MouseEnter:Connect(function()
         local node = row:GetAttribute("NodeIndex") and visiblenodes[row:GetAttribute("NodeIndex")]
-        if node and node ~= selectednode then
+        if node and not toolactions.Selection.Set[node] then
             row.BackgroundTransparency = 0
             row.BackgroundColor3 = theme.Hover
         end
@@ -3284,7 +3382,7 @@ function treecontroller.CreateRow(i: number)
 
     row.MouseLeave:Connect(function()
         local node = row:GetAttribute("NodeIndex") and visiblenodes[row:GetAttribute("NodeIndex")]
-        if node ~= selectednode then
+        if not toolactions.Selection.Set[node] then
             row.BackgroundTransparency = 1
         end
     end)
@@ -3483,6 +3581,10 @@ toolactions.ReadBasePropertyValue = function(prop)
 
     if prop.Special == "Attribute" then
         return selectednode.obj:GetAttribute(prop.AttrName), true
+    end
+
+    if prop.Special == "Tag" then
+        return prop.TagName, true
     end
 
     return valuecodec.ReadProperty(selectednode.obj, prop.Name)
@@ -3942,9 +4044,10 @@ function propertycontroller.OpenDropdown(row, prop, currentvalue)
         }, scroll)
     end
 
-    local width = math.max(
-        220,
-        propertycontroller.GetViewportWidth() - prop_name_w - 8
+    local panewidth = propertiespane.AbsoluteSize.X
+    local width = math.min(
+        math.max(220, propertycontroller.GetViewportWidth() - prop_name_w - 8),
+        math.max(80, panewidth - 8)
     )
 
     local itemheight = 24
@@ -3954,6 +4057,7 @@ function propertycontroller.OpenDropdown(row, prop, currentvalue)
         - propertiespane.AbsolutePosition.X
         + prop_name_w
         + 4
+    localx = math.max(4, math.min(localx, panewidth - width - 4))
 
     local localy =
         row.AbsolutePosition.Y
@@ -4047,9 +4151,10 @@ toolactions.ColorPicker.Frame = uifactory.Create("Frame", {
     Visible = false,
     BackgroundColor3 = Color3.fromRGB(31, 31, 31),
     BorderSizePixel = 0,
-    Size = UDim2.fromOffset(300, 270),
+    Size = UDim2.fromOffset(300, 298),
     ZIndex = 70,
-}, propertiespane)
+}, rootgui)
+uifactory.Round(toolactions.ColorPicker.Frame, 6)
 uifactory.Stroke(toolactions.ColorPicker.Frame, theme.Border)
 
 toolactions.ColorPicker.Title = uifactory.Text(
@@ -4057,29 +4162,51 @@ toolactions.ColorPicker.Title = uifactory.Text(
     "Color3",
     15
 )
-toolactions.ColorPicker.Title.Position = UDim2.fromOffset(8, 0)
-toolactions.ColorPicker.Title.Size = UDim2.new(1, -36, 0, 28)
+toolactions.ColorPicker.Title.Position = UDim2.fromOffset(12, 0)
+toolactions.ColorPicker.Title.Size = UDim2.new(1, -44, 0, 30)
 toolactions.ColorPicker.Title.ZIndex = 71
 
+uifactory.Create("Frame", {
+    Position = UDim2.fromOffset(0, 30),
+    Size = UDim2.new(1, 0, 0, 1),
+    BackgroundColor3 = theme.BorderSoft,
+    BorderSizePixel = 0,
+    ZIndex = 71,
+}, toolactions.ColorPicker.Frame)
+
 toolactions.ColorPicker.Close = uifactory.Create("TextButton", {
-    Position = UDim2.new(1, -28, 0, 0),
-    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.new(1, -30, 0, 2),
+    Size = UDim2.fromOffset(26, 26),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
+    AutoButtonColor = false,
     Text = "×",
-    TextColor3 = theme.Text,
-    TextSize = 17,
+    TextColor3 = theme.Dim,
+    TextSize = 18,
     Font = Enum.Font.SourceSans,
     ZIndex = 72,
 }, toolactions.ColorPicker.Frame)
+uifactory.Round(toolactions.ColorPicker.Close, 4)
+
+toolactions.ColorPicker.Close.MouseEnter:Connect(function()
+    toolactions.ColorPicker.Close.BackgroundTransparency = 0
+    toolactions.ColorPicker.Close.BackgroundColor3 = theme.Hover
+    toolactions.ColorPicker.Close.TextColor3 = theme.Text
+end)
+
+toolactions.ColorPicker.Close.MouseLeave:Connect(function()
+    toolactions.ColorPicker.Close.BackgroundTransparency = 1
+    toolactions.ColorPicker.Close.TextColor3 = theme.Dim
+end)
 
 toolactions.ColorPicker.SVBase = uifactory.Create("Frame", {
-    Position = UDim2.fromOffset(10, 34),
+    Position = UDim2.fromOffset(12, 40),
     Size = UDim2.fromOffset(190, 150),
     BackgroundColor3 = Color3.fromHSV(0, 1, 1),
     BorderSizePixel = 0,
     ZIndex = 71,
 }, toolactions.ColorPicker.Frame)
+uifactory.Round(toolactions.ColorPicker.SVBase, 4)
 
 toolactions.ColorPicker.SVWhite = uifactory.Create("Frame", {
     Size = UDim2.fromScale(1, 1),
@@ -4087,6 +4214,7 @@ toolactions.ColorPicker.SVWhite = uifactory.Create("Frame", {
     BorderSizePixel = 0,
     ZIndex = 72,
 }, toolactions.ColorPicker.SVBase)
+uifactory.Round(toolactions.ColorPicker.SVWhite, 4)
 
 uifactory.Create("UIGradient", {
     Rotation = 0,
@@ -4102,6 +4230,7 @@ toolactions.ColorPicker.SVBlack = uifactory.Create("Frame", {
     BorderSizePixel = 0,
     ZIndex = 73,
 }, toolactions.ColorPicker.SVBase)
+uifactory.Round(toolactions.ColorPicker.SVBlack, 4)
 
 uifactory.Create("UIGradient", {
     Rotation = 90,
@@ -4122,21 +4251,44 @@ toolactions.ColorPicker.SVInput = uifactory.Create("TextButton", {
 
 toolactions.ColorPicker.SVMarker = uifactory.Create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Size = UDim2.fromOffset(10, 10),
+    Size = UDim2.fromOffset(14, 14),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ZIndex = 75,
 }, toolactions.ColorPicker.SVBase)
-uifactory.Round(toolactions.ColorPicker.SVMarker, 5)
-uifactory.Stroke(toolactions.ColorPicker.SVMarker, Color3.new(1, 1, 1))
+uifactory.Round(toolactions.ColorPicker.SVMarker, 7)
+uifactory.Create("UIStroke", {
+    Color = Color3.new(1, 1, 1),
+    Thickness = 2,
+    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+}, toolactions.ColorPicker.SVMarker)
+
+do
+    local ring = uifactory.Create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(20, 20),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 75,
+    }, toolactions.ColorPicker.SVMarker)
+    uifactory.Round(ring, 10)
+    uifactory.Create("UIStroke", {
+        Color = Color3.new(0, 0, 0),
+        Thickness = 1,
+        Transparency = 0.55,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, ring)
+end
 
 toolactions.ColorPicker.Hue = uifactory.Create("Frame", {
-    Position = UDim2.fromOffset(208, 34),
-    Size = UDim2.fromOffset(18, 150),
+    Position = UDim2.fromOffset(212, 40),
+    Size = UDim2.fromOffset(16, 150),
     BackgroundColor3 = Color3.new(1, 1, 1),
     BorderSizePixel = 0,
     ZIndex = 71,
 }, toolactions.ColorPicker.Frame)
+uifactory.Round(toolactions.ColorPicker.Hue, 4)
 
 uifactory.Create("UIGradient", {
     Rotation = 90,
@@ -4163,76 +4315,103 @@ toolactions.ColorPicker.HueInput = uifactory.Create("TextButton", {
 toolactions.ColorPicker.HueMarker = uifactory.Create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0),
-    Size = UDim2.fromOffset(24, 3),
+    Size = UDim2.fromOffset(22, 8),
     BackgroundColor3 = Color3.new(1, 1, 1),
     BorderSizePixel = 0,
     ZIndex = 74,
 }, toolactions.ColorPicker.Hue)
+uifactory.Round(toolactions.ColorPicker.HueMarker, 3)
+uifactory.Create("UIStroke", {
+    Color = Color3.fromRGB(20, 20, 20),
+    Thickness = 1,
+    Transparency = 0.35,
+    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+}, toolactions.ColorPicker.HueMarker)
 
-toolactions.ColorPicker.Preview = uifactory.Create("Frame", {
-    Position = UDim2.fromOffset(236, 34),
-    Size = UDim2.fromOffset(54, 54),
+toolactions.ColorPicker.Preview = uifactory.Create("TextLabel", {
+    Position = UDim2.fromOffset(238, 40),
+    Size = UDim2.fromOffset(50, 72),
     BackgroundColor3 = Color3.new(1, 1, 1),
     BorderSizePixel = 0,
+    Text = "New",
+    TextColor3 = Color3.fromRGB(20, 20, 20),
+    TextSize = 12,
+    Font = Enum.Font.SourceSans,
     ZIndex = 71,
 }, toolactions.ColorPicker.Frame)
+uifactory.Round(toolactions.ColorPicker.Preview, 4)
 uifactory.Stroke(toolactions.ColorPicker.Preview, theme.Border)
 
-toolactions.ColorPicker.R = uifactory.Create("TextBox", {
-    Position = UDim2.fromOffset(10, 196),
-    Size = UDim2.fromOffset(82, 28),
-    BackgroundColor3 = theme.Panel2,
+toolactions.ColorPicker.Original = uifactory.Create("TextButton", {
+    Position = UDim2.fromOffset(238, 118),
+    Size = UDim2.fromOffset(50, 72),
+    BackgroundColor3 = Color3.new(1, 1, 1),
     BorderSizePixel = 0,
-    Text = "255",
-    TextColor3 = theme.Text,
-    TextSize = 14,
+    AutoButtonColor = false,
+    Text = "Old",
+    TextColor3 = Color3.fromRGB(20, 20, 20),
+    TextSize = 12,
     Font = Enum.Font.SourceSans,
-    ClearTextOnFocus = false,
     ZIndex = 71,
 }, toolactions.ColorPicker.Frame)
-uifactory.Stroke(toolactions.ColorPicker.R, theme.BorderSoft)
+uifactory.Round(toolactions.ColorPicker.Original, 4)
+uifactory.Stroke(toolactions.ColorPicker.Original, theme.Border)
 
-toolactions.ColorPicker.G = uifactory.Create("TextBox", {
-    Position = UDim2.fromOffset(109, 196),
-    Size = UDim2.fromOffset(82, 28),
-    BackgroundColor3 = theme.Panel2,
-    BorderSizePixel = 0,
-    Text = "255",
-    TextColor3 = theme.Text,
-    TextSize = 14,
-    Font = Enum.Font.SourceSans,
-    ClearTextOnFocus = false,
-    ZIndex = 71,
-}, toolactions.ColorPicker.Frame)
-uifactory.Stroke(toolactions.ColorPicker.G, theme.BorderSoft)
+toolactions.ColorPicker.CreateField = function(labeltext, x, y, width)
+    local label = uifactory.Text(
+        toolactions.ColorPicker.Frame,
+        labeltext,
+        12,
+        Enum.TextXAlignment.Left
+    )
+    label.Position = UDim2.fromOffset(x, y)
+    label.Size = UDim2.fromOffset(width, 14)
+    label.TextColor3 = theme.Dim
+    label.ZIndex = 71
 
-toolactions.ColorPicker.B = uifactory.Create("TextBox", {
-    Position = UDim2.fromOffset(208, 196),
-    Size = UDim2.fromOffset(82, 28),
-    BackgroundColor3 = theme.Panel2,
-    BorderSizePixel = 0,
-    Text = "255",
-    TextColor3 = theme.Text,
-    TextSize = 14,
-    Font = Enum.Font.SourceSans,
-    ClearTextOnFocus = false,
-    ZIndex = 71,
-}, toolactions.ColorPicker.Frame)
-uifactory.Stroke(toolactions.ColorPicker.B, theme.BorderSoft)
+    local box = uifactory.Create("TextBox", {
+        Position = UDim2.fromOffset(x, y + 16),
+        Size = UDim2.fromOffset(width, 26),
+        BackgroundColor3 = theme.Panel2,
+        BorderSizePixel = 0,
+        Text = "",
+        TextColor3 = theme.Text,
+        TextSize = 14,
+        Font = Enum.Font.SourceSans,
+        ClearTextOnFocus = false,
+        ZIndex = 71,
+    }, toolactions.ColorPicker.Frame)
+    uifactory.Round(box, 4)
 
-toolactions.ColorPicker.Hex = uifactory.Create("TextBox", {
-    Position = UDim2.fromOffset(10, 232),
-    Size = UDim2.new(1, -20, 0, 28),
-    BackgroundColor3 = theme.Panel2,
-    BorderSizePixel = 0,
-    Text = "#FFFFFF",
-    TextColor3 = theme.Text,
-    TextSize = 14,
-    Font = Enum.Font.SourceSans,
-    ClearTextOnFocus = false,
-    ZIndex = 71,
-}, toolactions.ColorPicker.Frame)
-uifactory.Stroke(toolactions.ColorPicker.Hex, theme.BorderSoft)
+    local stroke = uifactory.Create("UIStroke", {
+        Color = theme.BorderSoft,
+        Thickness = 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, box)
+
+    box.Focused:Connect(function()
+        stroke.Color = theme.Accent
+    end)
+
+    box.FocusLost:Connect(function()
+        stroke.Color = theme.BorderSoft
+    end)
+
+    return box
+end
+
+toolactions.ColorPicker.R = toolactions.ColorPicker.CreateField("R", 12, 198, 88)
+toolactions.ColorPicker.G = toolactions.ColorPicker.CreateField("G", 106, 198, 88)
+toolactions.ColorPicker.B = toolactions.ColorPicker.CreateField("B", 200, 198, 88)
+toolactions.ColorPicker.Hex = toolactions.ColorPicker.CreateField("HEX", 12, 246, 276)
+
+toolactions.ColorPicker.Contrast = function(color)
+    local luminance = 0.299 * color.R + 0.587 * color.G + 0.114 * color.B
+
+    return luminance > 0.55
+        and Color3.fromRGB(20, 20, 20)
+        or Color3.fromRGB(245, 245, 245)
+end
 
 toolactions.ColorPicker.Refresh = function(updatetext)
     local state = toolactions.ColorPicker.State
@@ -4248,6 +4427,8 @@ toolactions.ColorPicker.Refresh = function(updatetext)
         UDim2.fromScale(0.5, state.H)
 
     toolactions.ColorPicker.Preview.BackgroundColor3 = color
+    toolactions.ColorPicker.Preview.TextColor3 =
+        toolactions.ColorPicker.Contrast(color)
 
     if updatetext ~= false then
         local r = math.floor(color.R * 255 + 0.5)
@@ -4297,6 +4478,14 @@ toolactions.CloseColorPicker = function()
     toolactions.ColorPicker.State.DragHue = false
 end
 
+main:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+    toolactions.CloseColorPicker()
+end)
+
+main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    toolactions.CloseColorPicker()
+end)
+
 toolactions.OpenColorPicker = function(row, prop, color)
     if not row or not prop or prop.ReadOnly or typeof(color) ~= "Color3" then
         return
@@ -4312,35 +4501,36 @@ toolactions.OpenColorPicker = function(row, prop, color)
     state.H = h
     state.S = s
     state.V = v
+    state.Original = color
+
+    toolactions.ColorPicker.Original.BackgroundColor3 = color
+    toolactions.ColorPicker.Original.TextColor3 =
+        toolactions.ColorPicker.Contrast(color)
 
     local frame = toolactions.ColorPicker.Frame
     local width = frame.Size.X.Offset
     local height = frame.Size.Y.Offset
 
-    local x =
-        row.AbsolutePosition.X
-        - propertiespane.AbsolutePosition.X
-        + prop_name_w
-        + 4
+    local screen = rootgui.AbsoluteSize
+    local mainpos = main.AbsolutePosition
+    local mainsize = main.AbsoluteSize
+    local gap = 8
 
-    local y =
-        row.AbsolutePosition.Y
-        - propertiespane.AbsolutePosition.Y
-        + row.AbsoluteSize.Y
+    local x = mainpos.X - width - gap
 
-    if x + width > propertiespane.AbsoluteSize.X - 4 then
-        x = math.max(4, propertiespane.AbsoluteSize.X - width - 4)
+    if x < 4 then
+        x = mainpos.X + mainsize.X + gap
+
+        if x + width > screen.X - 4 then
+            x = math.max(4, screen.X - width - 4)
+        end
     end
 
-    if y + height > propertiespane.AbsoluteSize.Y - 4 then
-        y =
-            math.max(
-                32,
-                row.AbsolutePosition.Y
-                - propertiespane.AbsolutePosition.Y
-                - height
-            )
-    end
+    local y = runtimeutil.Clamp(
+        row.AbsolutePosition.Y,
+        4,
+        math.max(4, screen.Y - height - 4)
+    )
 
     frame.Position = UDim2.fromOffset(x, y)
     frame.Visible = true
@@ -4423,6 +4613,19 @@ toolactions.ColorPicker.Close.MouseButton1Click:Connect(function()
     toolactions.CloseColorPicker()
 end)
 
+toolactions.ColorPicker.Original.MouseButton1Click:Connect(function()
+    local state = toolactions.ColorPicker.State
+    local original = state.Original
+
+    if typeof(original) ~= "Color3" then
+        return
+    end
+
+    state.H, state.S, state.V = original:ToHSV()
+    toolactions.ColorPicker.Refresh(true)
+    toolactions.ColorPicker.Apply()
+end)
+
 toolactions.ColorPicker.ApplyRGB = function()
     local r = tonumber(toolactions.ColorPicker.R.Text)
     local g = tonumber(toolactions.ColorPicker.G.Text)
@@ -4482,6 +4685,1184 @@ toolactions.ColorPicker.Hex.FocusLost:Connect(function()
     toolactions.ColorPicker.Apply()
 end)
 
+toolactions.CreatePopup = function(name, title, width, height, z)
+    local frame = uifactory.Create("Frame", {
+        Name = name,
+        Visible = false,
+        BackgroundColor3 = Color3.fromRGB(31, 31, 31),
+        BorderSizePixel = 0,
+        Size = UDim2.fromOffset(width, height),
+        ZIndex = z,
+    }, rootgui)
+    uifactory.Round(frame, 6)
+    uifactory.Stroke(frame, theme.Border)
+
+    local titlelabel = uifactory.Text(frame, title, 15)
+    titlelabel.Position = UDim2.fromOffset(12, 0)
+    titlelabel.Size = UDim2.new(1, -44, 0, 30)
+    titlelabel.ZIndex = z + 1
+
+    uifactory.Create("Frame", {
+        Position = UDim2.fromOffset(0, 30),
+        Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = theme.BorderSoft,
+        BorderSizePixel = 0,
+        ZIndex = z + 1,
+    }, frame)
+
+    local close = uifactory.Create("TextButton", {
+        Position = UDim2.new(1, -30, 0, 2),
+        Size = UDim2.fromOffset(26, 26),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "×",
+        TextColor3 = theme.Dim,
+        TextSize = 18,
+        Font = Enum.Font.SourceSans,
+        ZIndex = z + 2,
+    }, frame)
+    uifactory.Round(close, 4)
+
+    close.MouseEnter:Connect(function()
+        close.BackgroundTransparency = 0
+        close.BackgroundColor3 = theme.Hover
+        close.TextColor3 = theme.Text
+    end)
+
+    close.MouseLeave:Connect(function()
+        close.BackgroundTransparency = 1
+        close.TextColor3 = theme.Dim
+    end)
+
+    return frame, titlelabel, close
+end
+
+toolactions.PlacePopup = function(frame, anchor)
+    local width = frame.Size.X.Offset
+    local height = frame.Size.Y.Offset
+    local screen = rootgui.AbsoluteSize
+    local mainpos = main.AbsolutePosition
+    local mainsize = main.AbsoluteSize
+    local gap = 8
+
+    local x = mainpos.X - width - gap
+
+    if x < 4 then
+        x = mainpos.X + mainsize.X + gap
+
+        if x + width > screen.X - 4 then
+            x = math.max(4, screen.X - width - 4)
+        end
+    end
+
+    local y = runtimeutil.Clamp(
+        anchor and anchor.AbsolutePosition.Y or 40,
+        4,
+        math.max(4, screen.Y - height - 4)
+    )
+
+    frame.Position = UDim2.fromOffset(x, y)
+end
+
+toolactions.CreateEditorBox = function(parent, x, y, width, height, z)
+    local box = uifactory.Create("TextBox", {
+        Position = UDim2.fromOffset(x, y),
+        Size = UDim2.fromOffset(width, height),
+        BackgroundColor3 = theme.Panel2,
+        BorderSizePixel = 0,
+        Text = "",
+        TextColor3 = theme.Text,
+        TextSize = 14,
+        Font = Enum.Font.SourceSans,
+        ClearTextOnFocus = false,
+        ZIndex = z,
+    }, parent)
+    uifactory.Round(box, 4)
+
+    local stroke = uifactory.Create("UIStroke", {
+        Color = theme.BorderSoft,
+        Thickness = 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, box)
+
+    box.Focused:Connect(function()
+        stroke.Color = theme.Accent
+    end)
+
+    box.FocusLost:Connect(function()
+        stroke.Color = theme.BorderSoft
+    end)
+
+    return box, stroke
+end
+
+toolactions.CreateEditorButton = function(parent, text, x, y, width, height, z)
+    local button = uifactory.Create("TextButton", {
+        Position = UDim2.fromOffset(x, y),
+        Size = UDim2.fromOffset(width, height),
+        BackgroundColor3 = theme.Panel3,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = text,
+        TextColor3 = theme.Text,
+        TextSize = 14,
+        Font = Enum.Font.SourceSans,
+        ZIndex = z,
+    }, parent)
+    uifactory.Round(button, 4)
+
+    button.MouseEnter:Connect(function()
+        button.BackgroundColor3 = theme.Hover
+    end)
+
+    button.MouseLeave:Connect(function()
+        button.BackgroundColor3 = theme.Panel3
+    end)
+
+    return button
+end
+
+-- NumberSequence / ColorSequence editor
+do
+    local SE = {
+        Prop = nil,
+        Type = nil,
+        Rows = {},
+        Markers = {},
+        Bars = {},
+        Selected = 1,
+        Drag = nil,
+        MinV = 0,
+        MaxV = 1,
+        Accum = 0,
+    }
+    toolactions.SequenceEditor = SE
+
+    local BAR_COUNT = 48
+    local ROW_H = 28
+
+    SE.Frame, SE.Title, SE.Close = toolactions.CreatePopup("SequenceEditor", "Sequence", 344, 392, 60)
+    local frame = SE.Frame
+
+    SE.Graph = uifactory.Create("TextButton", {
+        Position = UDim2.fromOffset(12, 42),
+        Size = UDim2.fromOffset(320, 96),
+        BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 61,
+    }, frame)
+    uifactory.Stroke(SE.Graph, theme.Border)
+
+    SE.BarHolder = uifactory.Create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 62,
+    }, SE.Graph)
+
+    for i = 1, BAR_COUNT do
+        SE.Bars[i] = uifactory.Create("Frame", {
+            AnchorPoint = Vector2.new(0, 1),
+            Position = UDim2.new((i - 1) / BAR_COUNT, 0, 1, 0),
+            Size = UDim2.new(1 / BAR_COUNT, 0, 0, 0),
+            BackgroundColor3 = Color3.fromRGB(58, 118, 176),
+            BorderSizePixel = 0,
+            ZIndex = 62,
+        }, SE.BarHolder)
+    end
+
+    SE.Gradient = uifactory.Create("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 62,
+    }, SE.Graph)
+
+    SE.GradientObject = uifactory.Create("UIGradient", {}, SE.Gradient)
+
+    SE.AddButton = toolactions.CreateEditorButton(frame, "+ Add Key", 12, 146, 90, 24, 61)
+
+    SE.Hint = uifactory.Text(frame, "click graph to add • drag points", 12)
+    SE.Hint.Position = UDim2.fromOffset(110, 146)
+    SE.Hint.Size = UDim2.fromOffset(222, 24)
+    SE.Hint.TextColor3 = theme.Dim
+    SE.Hint.ZIndex = 61
+
+    SE.Header = uifactory.Text(frame, "", 12)
+    SE.Header.Position = UDim2.fromOffset(12, 176)
+    SE.Header.Size = UDim2.fromOffset(320, 16)
+    SE.Header.TextColor3 = theme.Dim
+    SE.Header.ZIndex = 61
+
+    SE.List = uifactory.Create("ScrollingFrame", {
+        Position = UDim2.fromOffset(12, 196),
+        Size = UDim2.fromOffset(320, 184),
+        BackgroundColor3 = theme.Panel,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 6,
+        ScrollBarImageColor3 = Color3.fromRGB(92, 92, 92),
+        CanvasSize = UDim2.new(),
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ZIndex = 61,
+    }, frame)
+    uifactory.Stroke(SE.List, theme.BorderSoft)
+
+    local function readkeys(value)
+        local out = {}
+        local isnumber = typeof(value) == "NumberSequence"
+
+        for _, kp in value.Keypoints do
+            if isnumber then
+                out[#out + 1] = {Time = kp.Time, Value = kp.Value, Envelope = kp.Envelope}
+            else
+                out[#out + 1] = {Time = kp.Time, Color = kp.Value}
+            end
+        end
+
+        return out
+    end
+
+    local function sample(list, isnumber, t)
+        for i = 1, #list - 1 do
+            local a = list[i]
+            local b = list[i + 1]
+
+            if t >= a.Time and t <= b.Time then
+                local span = b.Time - a.Time
+                local f = span > 0 and (t - a.Time) / span or 0
+
+                if isnumber then
+                    return a.Value + (b.Value - a.Value) * f, a.Envelope + (b.Envelope - a.Envelope) * f
+                end
+
+                return a.Color:Lerp(b.Color, f)
+            end
+        end
+
+        local last = list[#list]
+
+        if isnumber then
+            return last.Value, last.Envelope
+        end
+
+        return last.Color
+    end
+
+    local function normalize(list)
+        table.sort(list, function(a, b)
+            return a.Time < b.Time
+        end)
+
+        list[1].Time = 0
+        list[#list].Time = 1
+
+        for i = 2, #list - 1 do
+            local t = math.max(list[i].Time, list[i - 1].Time + 0.001)
+            list[i].Time = math.min(t, 1 - 0.001 * (#list - i))
+        end
+    end
+
+    local function commit(list, structural)
+        local isnumber = SE.Type == "NumberSequence"
+
+        normalize(list)
+
+        local ok, sequence = pcall(function()
+            local points = {}
+
+            for i, k in list do
+                if isnumber then
+                    points[i] = NumberSequenceKeypoint.new(k.Time, k.Value, math.max(0, k.Envelope or 0))
+                else
+                    points[i] = ColorSequenceKeypoint.new(k.Time, k.Color)
+                end
+            end
+
+            if isnumber then
+                return NumberSequence.new(points)
+            end
+
+            return ColorSequence.new(points)
+        end)
+
+        if ok and sequence then
+            valuecodec.WriteProperty(SE.Prop, sequence, structural == true)
+        end
+
+        SE.Refresh()
+    end
+
+    SE.Read = function()
+        if not SE.Prop then
+            return nil
+        end
+
+        local value, readable = toolactions.ReadBasePropertyValue(SE.Prop)
+
+        if readable and typeof(value) == SE.Type then
+            return value
+        end
+
+        return nil
+    end
+
+    local function edit(index, fn, structural)
+        local value = SE.Read()
+
+        if not value then
+            return
+        end
+
+        local list = readkeys(value)
+
+        if not list[index] then
+            return
+        end
+
+        fn(list[index], list)
+        commit(list, structural)
+    end
+
+    SE.GetMarker = function(i)
+        local marker = SE.Markers[i]
+
+        if marker then
+            return marker
+        end
+
+        marker = uifactory.Create("TextButton", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.fromOffset(12, 12),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = "",
+            ZIndex = 66,
+        }, SE.Graph)
+        uifactory.Round(marker, 6)
+        uifactory.Stroke(marker, Color3.fromRGB(20, 20, 20))
+
+        marker.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                SE.Selected = i
+                SE.Drag = i
+                SE.Refresh()
+            end
+        end)
+
+        SE.Markers[i] = marker
+        return marker
+    end
+
+    SE.GetRow = function(i)
+        local row = SE.Rows[i]
+
+        if row then
+            return row
+        end
+
+        local root = uifactory.Create("Frame", {
+            Position = UDim2.fromOffset(0, (i - 1) * ROW_H),
+            Size = UDim2.new(1, -8, 0, ROW_H),
+            BackgroundColor3 = theme.Panel,
+            BorderSizePixel = 0,
+            ZIndex = 62,
+        }, SE.List)
+
+        local index = uifactory.Text(root, tostring(i), 13, Enum.TextXAlignment.Center)
+        index.Position = UDim2.fromOffset(0, 0)
+        index.Size = UDim2.fromOffset(22, ROW_H)
+        index.TextColor3 = theme.Dim
+        index.ZIndex = 63
+
+        local time = toolactions.CreateEditorBox(root, 24, 2, 62, ROW_H - 4, 63)
+        local value = toolactions.CreateEditorBox(root, 92, 2, 76, ROW_H - 4, 63)
+        local envelope = toolactions.CreateEditorBox(root, 174, 2, 62, ROW_H - 4, 63)
+
+        local swatch = uifactory.Create("TextButton", {
+            Position = UDim2.fromOffset(92, 4),
+            Size = UDim2.fromOffset(28, ROW_H - 8),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = "",
+            ZIndex = 63,
+        }, root)
+        uifactory.Stroke(swatch, Color3.fromRGB(120, 120, 120))
+
+        local rgb = toolactions.CreateEditorBox(root, 126, 2, 110, ROW_H - 4, 63)
+
+        local delete = toolactions.CreateEditorButton(root, "×", 246, 2, 26, ROW_H - 4, 63)
+        delete.TextSize = 18
+
+        root.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                SE.Selected = i
+            end
+        end)
+
+        time.FocusLost:Connect(function()
+            local n = tonumber(time.Text)
+
+            if n then
+                edit(i, function(k)
+                    k.Time = runtimeutil.Clamp(n, 0, 1)
+                end)
+            else
+                SE.Refresh()
+            end
+        end)
+
+        value.FocusLost:Connect(function()
+            local n = tonumber(value.Text)
+
+            if n then
+                edit(i, function(k)
+                    k.Value = n
+                end)
+            else
+                SE.Refresh()
+            end
+        end)
+
+        envelope.FocusLost:Connect(function()
+            local n = tonumber(envelope.Text)
+
+            if n then
+                edit(i, function(k)
+                    k.Envelope = math.max(0, n)
+                end)
+            else
+                SE.Refresh()
+            end
+        end)
+
+        rgb.FocusLost:Connect(function()
+            local color, ok = valuecodec.Parse(rgb.Text, "Color3")
+
+            if ok then
+                edit(i, function(k)
+                    k.Color = color
+                end)
+            else
+                SE.Refresh()
+            end
+        end)
+
+        swatch.MouseButton1Click:Connect(function()
+            local sequence = SE.Read()
+            local list = sequence and readkeys(sequence)
+            local key = list and list[i]
+
+            if not key or not key.Color then
+                return
+            end
+
+            toolactions.OpenColorPicker(swatch, {
+                Name = "Color",
+                Category = "Sequence",
+                ValueType = "Color3",
+                Special = "Component",
+                ComponentKey = "CS:" .. i .. ":Color",
+                ParentProp = SE.Prop,
+                ReadOnly = false,
+            }, key.Color)
+
+            local picker = toolactions.ColorPicker.Frame
+            local pickerx = SE.Frame.AbsolutePosition.X - picker.Size.X.Offset - 8
+
+            if pickerx >= 4 then
+                picker.Position = UDim2.fromOffset(pickerx, SE.Frame.AbsolutePosition.Y)
+            end
+        end)
+
+        delete.MouseButton1Click:Connect(function()
+            edit(i, function(_, list)
+                if #list > 2 and i ~= 1 and i ~= #list then
+                    table.remove(list, i)
+                end
+            end, true)
+        end)
+
+        row = {
+            Root = root,
+            Index = index,
+            Time = time,
+            Value = value,
+            Envelope = envelope,
+            Swatch = swatch,
+            RGB = rgb,
+            Delete = delete,
+        }
+
+        SE.Rows[i] = row
+        return row
+    end
+
+    SE.Refresh = function()
+        local value = SE.Read()
+
+        if not value then
+            toolactions.CloseSequenceEditor()
+            return
+        end
+
+        local isnumber = SE.Type == "NumberSequence"
+        local list = readkeys(value)
+
+        if not SE.Drag then
+            local hi = 1
+            local lo = 0
+
+            if isnumber then
+                for _, k in list do
+                    hi = math.max(hi, k.Value + k.Envelope)
+                    lo = math.min(lo, k.Value - k.Envelope)
+                end
+            end
+
+            SE.MinV = lo
+            SE.MaxV = hi
+        end
+
+        local range = math.max(1e-6, SE.MaxV - SE.MinV)
+
+        SE.BarHolder.Visible = isnumber
+        SE.Gradient.Visible = not isnumber
+
+        if isnumber then
+            for i, bar in SE.Bars do
+                local v = sample(list, true, (i - 0.5) / BAR_COUNT)
+                local frac = runtimeutil.Clamp((v - SE.MinV) / range, 0, 1)
+                bar.Size = UDim2.new(1 / BAR_COUNT, 0, frac, 0)
+            end
+        else
+            SE.GradientObject.Color = value
+        end
+
+        SE.Selected = runtimeutil.Clamp(SE.Selected, 1, #list)
+        SE.Header.Text = isnumber
+            and "    #     Time          Value          Envelope"
+            or "    #     Time          Color"
+
+        for i, key in list do
+            local marker = SE.GetMarker(i)
+            local y = 0.5
+
+            if isnumber then
+                y = 1 - runtimeutil.Clamp((key.Value - SE.MinV) / range, 0, 1)
+            end
+
+            marker.Visible = true
+            marker.Position = UDim2.new(key.Time, 0, y, 0)
+            marker.BackgroundColor3 = isnumber and Color3.new(1, 1, 1) or key.Color
+            marker.Size = i == SE.Selected and UDim2.fromOffset(14, 14) or UDim2.fromOffset(12, 12)
+        end
+
+        for i = #list + 1, #SE.Markers do
+            SE.Markers[i].Visible = false
+        end
+
+        for i, key in list do
+            local row = SE.GetRow(i)
+
+            row.Root.Visible = true
+            row.Root.Position = UDim2.fromOffset(0, (i - 1) * ROW_H)
+            row.Root.BackgroundColor3 = i == SE.Selected and theme.Hover or theme.Panel
+            row.Value.Visible = isnumber
+            row.Envelope.Visible = isnumber
+            row.Swatch.Visible = not isnumber
+            row.RGB.Visible = not isnumber
+            row.Delete.Visible = #list > 2 and i ~= 1 and i ~= #list
+
+            local function settext(box, text)
+                if not box:IsFocused() and box.Text ~= text then
+                    box.Text = text
+                end
+            end
+
+            settext(row.Time, ("%.3f"):format(key.Time))
+
+            if isnumber then
+                settext(row.Value, ("%.3f"):format(key.Value))
+                settext(row.Envelope, ("%.3f"):format(key.Envelope))
+            else
+                row.Swatch.BackgroundColor3 = key.Color
+                settext(row.RGB, valuecodec.ToString(key.Color))
+            end
+        end
+
+        for i = #list + 1, #SE.Rows do
+            SE.Rows[i].Root.Visible = false
+        end
+
+        SE.List.CanvasSize = UDim2.fromOffset(0, #list * ROW_H)
+    end
+
+    SE.AddKeyAt = function(time)
+        local value = SE.Read()
+
+        if not value then
+            return
+        end
+
+        local isnumber = SE.Type == "NumberSequence"
+        local list = readkeys(value)
+        local key = {Time = runtimeutil.Clamp(time, 0.001, 0.999)}
+
+        if isnumber then
+            key.Value, key.Envelope = sample(list, true, key.Time)
+        else
+            key.Color = sample(list, false, key.Time)
+        end
+
+        list[#list + 1] = key
+        SE.Selected = #list
+        commit(list, true)
+    end
+
+    SE.AddButton.MouseButton1Click:Connect(function()
+        local value = SE.Read()
+
+        if not value then
+            return
+        end
+
+        local list = readkeys(value)
+        local bestgap = 0
+        local besttime = 0.5
+
+        for i = 1, #list - 1 do
+            local gap = list[i + 1].Time - list[i].Time
+
+            if gap > bestgap then
+                bestgap = gap
+                besttime = list[i].Time + gap / 2
+            end
+        end
+
+        SE.AddKeyAt(besttime)
+    end)
+
+    SE.Graph.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+            return
+        end
+
+        local fx = (input.Position.X - SE.Graph.AbsolutePosition.X) / math.max(1, SE.Graph.AbsoluteSize.X)
+        SE.AddKeyAt(fx)
+    end)
+
+    uis.InputChanged:Connect(function(input)
+        if not SE.Drag or input.UserInputType ~= Enum.UserInputType.MouseMovement then
+            return
+        end
+
+        local graph = SE.Graph
+        local fx = runtimeutil.Clamp((input.Position.X - graph.AbsolutePosition.X) / math.max(1, graph.AbsoluteSize.X), 0, 1)
+        local fy = runtimeutil.Clamp((input.Position.Y - graph.AbsolutePosition.Y) / math.max(1, graph.AbsoluteSize.Y), 0, 1)
+        local isnumber = SE.Type == "NumberSequence"
+        local index = SE.Drag
+
+        edit(index, function(k, list)
+            if index ~= 1 and index ~= #list then
+                local lo = list[index - 1].Time + 0.001
+                local hi = list[index + 1].Time - 0.001
+                k.Time = math.floor(runtimeutil.Clamp(fx, lo, math.max(lo, hi)) * 1000 + 0.5) / 1000
+            end
+
+            if isnumber then
+                k.Value = math.floor((SE.MinV + (1 - fy) * (SE.MaxV - SE.MinV)) * 1000 + 0.5) / 1000
+            end
+        end)
+    end)
+
+    uis.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            SE.Drag = nil
+        end
+    end)
+
+    toolactions.CloseSequenceEditor = function()
+        frame.Visible = false
+        SE.Prop = nil
+        SE.Type = nil
+        SE.Drag = nil
+    end
+
+    toolactions.OpenSequenceEditor = function(row, prop, value)
+        local t = typeof(value)
+
+        if (t ~= "NumberSequence" and t ~= "ColorSequence") or not prop or prop.ReadOnly then
+            return
+        end
+
+        propertycontroller.CloseDropdown()
+        toolactions.CloseColorPicker()
+        toolactions.ClosePropertyMenu()
+
+        if toolactions.CloseBrickPalette then toolactions.CloseBrickPalette() end
+        if toolactions.CloseAttributeDialog then toolactions.CloseAttributeDialog() end
+
+        SE.Prop = prop
+        SE.Type = t
+        SE.Selected = 1
+        SE.Drag = nil
+        SE.Title.Text = t .. " • " .. tostring(prop.Name)
+
+        toolactions.PlacePopup(frame, row)
+        frame.Visible = true
+        SE.Refresh()
+    end
+
+    SE.Close.MouseButton1Click:Connect(toolactions.CloseSequenceEditor)
+
+    runservice.Heartbeat:Connect(function(dt)
+        if not frame.Visible or not rootgui.Parent then
+            return
+        end
+
+        SE.Accum += dt
+
+        if SE.Accum < 0.1 then
+            return
+        end
+
+        SE.Accum = 0
+        SE.Refresh()
+    end)
+end
+
+-- BrickColor palette
+do
+    local BP = {
+        Cells = {},
+        Prop = nil,
+        Built = false,
+    }
+    toolactions.BrickPalette = BP
+
+    local COLUMNS = 10
+    local CELL = 27
+
+    BP.Frame, BP.Title, BP.Close = toolactions.CreatePopup("BrickPalette", "BrickColor", 296, 322, 60)
+    local frame = BP.Frame
+
+    BP.Scroll = uifactory.Create("ScrollingFrame", {
+        Position = UDim2.fromOffset(8, 38),
+        Size = UDim2.fromOffset(280, 246),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 6,
+        ScrollBarImageColor3 = Color3.fromRGB(92, 92, 92),
+        CanvasSize = UDim2.new(),
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ZIndex = 61,
+    }, frame)
+
+    BP.Name = uifactory.Text(frame, "", 15)
+    BP.Name.Position = UDim2.fromOffset(12, 290)
+    BP.Name.Size = UDim2.fromOffset(272, 24)
+    BP.Name.ZIndex = 61
+
+    BP.Build = function()
+        if BP.Built then
+            return
+        end
+
+        BP.Built = true
+
+        local seen = {}
+        local index = 0
+
+        for paletteindex = 0, 127 do
+            local ok, bc = pcall(BrickColor.palette, paletteindex)
+
+            if ok and typeof(bc) == "BrickColor" and not seen[bc.Number] then
+                seen[bc.Number] = true
+
+                local col = index % COLUMNS
+                local rowindex = math.floor(index / COLUMNS)
+
+                local cell = uifactory.Create("TextButton", {
+                    Position = UDim2.fromOffset(col * CELL + 2, rowindex * CELL + 2),
+                    Size = UDim2.fromOffset(CELL - 3, CELL - 3),
+                    BackgroundColor3 = bc.Color,
+                    BorderSizePixel = 0,
+                    AutoButtonColor = false,
+                    Text = "",
+                    ZIndex = 62,
+                }, BP.Scroll)
+                uifactory.Round(cell, 3)
+
+                local stroke = uifactory.Create("UIStroke", {
+                    Color = Color3.fromRGB(60, 60, 60),
+                    Thickness = 1,
+                    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+                }, cell)
+
+                cell.MouseEnter:Connect(function()
+                    BP.Name.Text = tostring(bc)
+                end)
+
+                cell.MouseButton1Click:Connect(function()
+                    if BP.Prop then
+                        toolactions.WriteEntryValue(BP.Prop, bc)
+                    end
+
+                    toolactions.CloseBrickPalette()
+                end)
+
+                BP.Cells[#BP.Cells + 1] = {Cell = cell, Stroke = stroke, Number = bc.Number}
+                index += 1
+            end
+        end
+
+        BP.Scroll.CanvasSize = UDim2.fromOffset(0, math.ceil(index / COLUMNS) * CELL + 4)
+    end
+
+    toolactions.CloseBrickPalette = function()
+        frame.Visible = false
+        BP.Prop = nil
+    end
+
+    toolactions.OpenBrickPalette = function(row, prop, current)
+        if not prop or prop.ReadOnly or typeof(current) ~= "BrickColor" then
+            return
+        end
+
+        propertycontroller.CloseDropdown()
+        toolactions.CloseColorPicker()
+        toolactions.ClosePropertyMenu()
+
+        if toolactions.CloseSequenceEditor then toolactions.CloseSequenceEditor() end
+        if toolactions.CloseAttributeDialog then toolactions.CloseAttributeDialog() end
+
+        BP.Build()
+        BP.Prop = prop
+        BP.Name.Text = tostring(current)
+
+        for _, entry in BP.Cells do
+            local selected = entry.Number == current.Number
+            entry.Stroke.Color = selected and theme.Accent or Color3.fromRGB(60, 60, 60)
+            entry.Stroke.Thickness = selected and 2 or 1
+        end
+
+        toolactions.PlacePopup(frame, row)
+        frame.Visible = true
+    end
+
+    BP.Close.MouseButton1Click:Connect(toolactions.CloseBrickPalette)
+
+    uis.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 or not frame.Visible then
+            return
+        end
+
+        local mouse = uis:GetMouseLocation()
+
+        if toolactions.PointInside(frame, mouse) or toolactions.PointInside(propscroll, mouse) then
+            return
+        end
+
+        toolactions.CloseBrickPalette()
+    end)
+
+    propscroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+        if frame.Visible then
+            toolactions.CloseBrickPalette()
+        end
+    end)
+end
+
+-- Add Attribute / Add Tag dialog
+do
+    local AD = {
+        Mode = nil,
+        Type = "string",
+        TypeButtons = {},
+    }
+    toolactions.AddDialog = AD
+
+    local TYPES = {
+        {"string", function() return "" end},
+        {"number", function() return 0 end},
+        {"boolean", function() return false end},
+        {"Vector2", function() return Vector2.new(0, 0) end},
+        {"Vector3", function() return Vector3.new(0, 0, 0) end},
+        {"UDim", function() return UDim.new(0, 0) end},
+        {"UDim2", function() return UDim2.new(0, 0, 0, 0) end},
+        {"Color3", function() return Color3.new(1, 1, 1) end},
+        {"BrickColor", function() return BrickColor.new("Medium stone grey") end},
+        {"Rect", function() return Rect.new(0, 0, 0, 0) end},
+        {"NumberRange", function() return NumberRange.new(0, 1) end},
+        {"NumberSequence", function() return NumberSequence.new(0, 1) end},
+        {"ColorSequence", function() return ColorSequence.new(Color3.new(1, 1, 1)) end},
+    }
+
+    AD.Frame, AD.Title, AD.Close = toolactions.CreatePopup("AddDialog", "Add Attribute", 268, 232, 60)
+    local frame = AD.Frame
+
+    AD.NameBox, AD.NameStroke = toolactions.CreateEditorBox(frame, 12, 40, 244, 26, 61)
+    AD.NameBox.PlaceholderText = "Name"
+    AD.NameBox.PlaceholderColor3 = Color3.fromRGB(125, 125, 125)
+
+    AD.Types = uifactory.Create("Frame", {
+        Position = UDim2.fromOffset(12, 74),
+        Size = UDim2.fromOffset(244, 118),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 61,
+    }, frame)
+
+    uifactory.Create("UIGridLayout", {
+        CellSize = UDim2.fromOffset(78, 22),
+        CellPadding = UDim2.fromOffset(5, 5),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, AD.Types)
+
+    AD.AddButton = toolactions.CreateEditorButton(frame, "Add", 12, 0, 244, 28, 61)
+    AD.AddButton.AnchorPoint = Vector2.new(0, 1)
+    AD.AddButton.Position = UDim2.new(0, 12, 1, -10)
+    AD.AddButton.BackgroundColor3 = Color3.fromRGB(47, 83, 112)
+
+    AD.SelectType = function(name)
+        AD.Type = name
+
+        for typename, button in AD.TypeButtons do
+            button.BackgroundColor3 = typename == name and Color3.fromRGB(47, 83, 112) or theme.Panel3
+        end
+    end
+
+    for order, entry in TYPES do
+        local button = toolactions.CreateEditorButton(AD.Types, entry[1], 0, 0, 78, 22, 62)
+        button.LayoutOrder = order
+        button.TextSize = 13
+        AD.TypeButtons[entry[1]] = button
+
+        button.MouseButton1Click:Connect(function()
+            AD.SelectType(entry[1])
+        end)
+    end
+
+    AD.Defaults = {}
+
+    for _, entry in TYPES do
+        AD.Defaults[entry[1]] = entry[2]
+    end
+
+    AD.Flash = function()
+        AD.NameStroke.Color = theme.Danger
+
+        task.delay(0.8, function()
+            if AD.NameStroke.Parent then
+                AD.NameStroke.Color = theme.BorderSoft
+            end
+        end)
+    end
+
+    AD.Submit = function()
+        local obj = selectednode and selectednode.obj
+        local name = runtimeutil.Trim(AD.NameBox.Text)
+
+        if typeof(obj) ~= "Instance" or name == "" then
+            AD.Flash()
+            return
+        end
+
+        local ok
+
+        if AD.Mode == "Attribute" then
+            if obj:GetAttribute(name) ~= nil then
+                AD.Flash()
+                return
+            end
+
+            ok = pcall(obj.SetAttribute, obj, name, AD.Defaults[AD.Type]())
+        else
+            ok = pcall(obj.AddTag, obj, name)
+        end
+
+        if not ok then
+            AD.Flash()
+            return
+        end
+
+        toolactions.CloseAttributeDialog()
+        propertycontroller.Rebuild()
+        propertycontroller.Render()
+    end
+
+    AD.AddButton.MouseButton1Click:Connect(AD.Submit)
+
+    AD.NameBox.FocusLost:Connect(function(enter)
+        if enter then
+            AD.Submit()
+        end
+    end)
+
+    toolactions.CloseAttributeDialog = function()
+        frame.Visible = false
+        AD.NameBox.Text = ""
+        AD.Mode = nil
+    end
+
+    toolactions.OpenAddDialog = function(mode, row)
+        propertycontroller.CloseDropdown()
+        toolactions.CloseColorPicker()
+        toolactions.ClosePropertyMenu()
+
+        if toolactions.CloseSequenceEditor then toolactions.CloseSequenceEditor() end
+        if toolactions.CloseBrickPalette then toolactions.CloseBrickPalette() end
+
+        AD.Mode = mode
+        AD.NameBox.Text = ""
+        AD.Title.Text = mode == "Attribute" and "Add Attribute" or "Add Tag"
+        AD.Types.Visible = mode == "Attribute"
+        frame.Size = UDim2.fromOffset(268, mode == "Attribute" and 232 or 116)
+        AD.SelectType(AD.Type)
+
+        toolactions.PlacePopup(frame, row)
+        frame.Visible = true
+        AD.NameBox:CaptureFocus()
+    end
+
+    AD.Close.MouseButton1Click:Connect(toolactions.CloseAttributeDialog)
+end
+
+main:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+    toolactions.CloseSequenceEditor()
+    toolactions.CloseBrickPalette()
+    toolactions.CloseAttributeDialog()
+end)
+
+-- Credits
+do
+    toolactions.Credits = {"SixZensED"}
+
+    local button = uifactory.Create("ImageButton", {
+        Name = "Developer",
+        AutoButtonColor = false,
+        BackgroundTransparency = 0,
+        BackgroundColor3 = Color3.fromRGB(34, 34, 34),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.fromOffset(28, 28),
+        Image = "",
+        ZIndex = topbuttons.ZIndex + 1,
+    }, topbuttons)
+
+    local icon = uifactory.Create("ImageLabel", {
+        Name = "Icon",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(15, 15),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Image = "rbxassetid://124869839333139",
+        ImageColor3 = Color3.fromRGB(235, 235, 235),
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = button.ZIndex + 1,
+    }, button)
+
+    local frame = uifactory.Create("Frame", {
+        Name = "DeveloperPage",
+        Visible = false,
+        BackgroundColor3 = theme.Panel,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 28),
+        Size = UDim2.new(1, 0, 1, -28),
+        Active = true,
+        ZIndex = 60,
+    }, main)
+    toolactions.CreditsFrame = frame
+
+    local header = uifactory.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundColor3 = theme.Panel2,
+        BorderSizePixel = 0,
+        ZIndex = 61,
+    }, frame)
+
+    local title = uifactory.Text(header, "Developer", 16)
+    title.Position = UDim2.fromOffset(8, 0)
+    title.Size = UDim2.new(1, -16, 1, 0)
+    title.ZIndex = 62
+
+    local content = uifactory.Create("ScrollingFrame", {
+        Position = UDim2.fromOffset(0, 28),
+        Size = UDim2.new(1, 0, 1, -28),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 7,
+        ScrollBarImageColor3 = Color3.fromRGB(92, 92, 92),
+        CanvasSize = UDim2.new(),
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ElasticBehavior = Enum.ElasticBehavior.Never,
+        ZIndex = 61,
+    }, frame)
+
+    local y = 8
+
+    for _, entry in toolactions.Credits do
+        local name = uifactory.Text(content, entry, 18)
+        name.Position = UDim2.fromOffset(14, y)
+        name.Size = UDim2.new(1, -28, 0, 26)
+        name.TextColor3 = theme.Accent2
+        name.TextTruncate = Enum.TextTruncate.AtEnd
+        name.ZIndex = 62
+
+        y += 32
+    end
+
+    content.CanvasSize = UDim2.fromOffset(0, y + 8)
+
+    local function setactive(active)
+        button.BackgroundColor3 = active and Color3.fromRGB(50, 53, 59) or Color3.fromRGB(34, 34, 34)
+        icon.ImageColor3 = active and theme.Accent or Color3.fromRGB(235, 235, 235)
+    end
+
+    toolactions.CloseCredits = function()
+        frame.Visible = false
+        setactive(false)
+    end
+
+    toolactions.OpenCredits = function()
+        propertycontroller.CloseDropdown()
+        toolactions.CloseColorPicker()
+        toolactions.ClosePropertyMenu()
+        menucontroller.Close()
+
+        if toolactions.Settings.Close then
+            toolactions.Settings.Close()
+        end
+
+        frame.Visible = true
+        setactive(true)
+    end
+
+    button.MouseEnter:Connect(function()
+        button.BackgroundColor3 = Color3.fromRGB(50, 53, 59)
+        icon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    end)
+
+    button.MouseLeave:Connect(function()
+        setactive(frame.Visible)
+    end)
+
+    button.MouseButton1Click:Connect(function()
+        if frame.Visible then
+            toolactions.CloseCredits()
+        else
+            toolactions.OpenCredits()
+        end
+    end)
+end
+
 toolactions.PropertyMenu = toolactions.PropertyMenu or {}
 toolactions.PropertyMenu.Frame = uifactory.Create("Frame", {
     Name = "PropertyMenu",
@@ -4502,6 +5883,19 @@ toolactions.PropertyMenu.Reset = uifactory.Create("TextButton", {
     TextColor3 = theme.Text,
     TextSize = 14,
     Font = Enum.Font.SourceSans,
+    ZIndex = 81,
+}, toolactions.PropertyMenu.Frame)
+
+toolactions.PropertyMenu.Delete = uifactory.Create("TextButton", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Delete Attribute",
+    TextColor3 = Color3.fromRGB(235, 120, 120),
+    TextSize = 14,
+    Font = Enum.Font.SourceSans,
+    Visible = false,
     ZIndex = 81,
 }, toolactions.PropertyMenu.Frame)
 
@@ -4563,13 +5957,19 @@ toolactions.OpenPropertyMenu = function(row, prop, position)
     end
 
     local base = prop.ParentProp or prop
+    local isattribute = base.Special == "Attribute"
+    local istag = base.Special == "Tag"
 
-    if base.ReadOnly
-        or base.Special == "Attribute"
-        or base.Special == "Category"
+    if base.Special == "Category"
+        or base.Special == "Action"
+        or (base.ReadOnly and not istag)
     then
         return
     end
+
+    toolactions.PropertyMenu.Reset.Visible = not (isattribute or istag)
+    toolactions.PropertyMenu.Delete.Visible = isattribute or istag
+    toolactions.PropertyMenu.Delete.Text = istag and "Remove Tag" or "Delete Attribute"
 
     propertycontroller.CloseDropdown()
     toolactions.CloseColorPicker()
@@ -4607,6 +6007,24 @@ toolactions.PropertyMenu.Reset.MouseButton1Click:Connect(function()
 
     if prop then
         toolactions.ResetProperty(prop)
+    end
+
+    toolactions.ClosePropertyMenu()
+end)
+
+toolactions.PropertyMenu.Delete.MouseButton1Click:Connect(function()
+    local prop = toolactions.PropertyMenu.Prop
+    local obj = selectednode and selectednode.obj
+
+    if prop and typeof(obj) == "Instance" then
+        if prop.Special == "Attribute" then
+            pcall(obj.SetAttribute, obj, prop.AttrName, nil)
+        elseif prop.Special == "Tag" then
+            pcall(obj.RemoveTag, obj, prop.TagName)
+        end
+
+        propertycontroller.Rebuild()
+        propertycontroller.Render()
     end
 
     toolactions.ClosePropertyMenu()
@@ -4781,6 +6199,14 @@ function propertycontroller.CreateRow(i: number)
         local idx = row:GetAttribute("PropIndex")
         local p = idx and propertylist[idx]
 
+        if p and p.Special == "Action" then
+            if p.OnClick then
+                p.OnClick(row)
+            end
+
+            return
+        end
+
         if not p or p.Special ~= "Category" then
             return
         end
@@ -4825,6 +6251,18 @@ function propertycontroller.CreateRow(i: number)
         local p = idx and propertylist[idx]
         local valuenow, readable = toolactions.ReadEntryValue(p)
 
+        if p and p.Special == "Tag" then
+            local obj = selectednode and selectednode.obj
+
+            if typeof(obj) == "Instance" then
+                pcall(obj.RemoveTag, obj, p.TagName)
+                propertycontroller.Rebuild()
+                propertycontroller.Render()
+            end
+
+            return
+        end
+
         if readable
             and typeof(valuenow) == "Instance"
             and toolactions.JumpToInstance
@@ -4845,7 +6283,7 @@ function propertycontroller.CreateRow(i: number)
         if typeof(currentvalue) == "Color3" then
             toolactions.OpenColorPicker(row, p, currentvalue)
         elseif typeof(currentvalue) == "BrickColor" then
-            propertycontroller.OpenDropdown(row, p, currentvalue)
+            toolactions.OpenBrickPalette(row, p, currentvalue)
         end
     end)
 
@@ -4858,7 +6296,15 @@ function propertycontroller.CreateRow(i: number)
             return
         end
 
-        propertycontroller.OpenDropdown(row, p, currentvalue)
+        local valuetype = typeof(currentvalue)
+
+        if valuetype == "NumberSequence" or valuetype == "ColorSequence" then
+            toolactions.OpenSequenceEditor(row, p, currentvalue)
+        elseif valuetype == "BrickColor" then
+            toolactions.OpenBrickPalette(row, p, currentvalue)
+        else
+            propertycontroller.OpenDropdown(row, p, currentvalue)
+        end
     end)
 
     value.InputBegan:Connect(function(input)
@@ -4889,9 +6335,11 @@ function propertycontroller.CreateRow(i: number)
 
         if valuetype == "Color3" then
             toolactions.OpenColorPicker(row, p, currentvalue)
-        elseif valuetype == "EnumItem"
-            or valuetype == "BrickColor"
-        then
+        elseif valuetype == "BrickColor" then
+            toolactions.OpenBrickPalette(row, p, currentvalue)
+        elseif valuetype == "NumberSequence" or valuetype == "ColorSequence" then
+            toolactions.OpenSequenceEditor(row, p, currentvalue)
+        elseif valuetype == "EnumItem" then
             propertycontroller.OpenDropdown(row, p, currentvalue)
         end
     end)
@@ -5194,7 +6642,7 @@ function propertycontroller.Rebuild()
         return a:lower() < b:lower()
     end)
 
-    if #attrnames > 0 then
+    if #attrnames > 0 or q == "" then
         local attrscollapsed =
             q == ""
             and toolactions.PropertyCategoryCollapsed.Attributes == true
@@ -5241,6 +6689,77 @@ function propertycontroller.Rebuild()
                     end
                 end
             end
+
+            if q == "" then
+                propertylist[#propertylist + 1] = {
+                    Name = "Add Attribute",
+                    Text = "+ Add Attribute",
+                    Category = "Attributes",
+                    ValueType = "",
+                    Special = "Action",
+                    OnClick = function(row)
+                        toolactions.OpenAddDialog("Attribute", row)
+                    end,
+                }
+            end
+        end
+    end
+
+    local tagnames = {}
+    local okt, tags = pcall(obj.GetTags, obj)
+
+    if okt and type(tags) == "table" then
+        for _, tag in tags do
+            if q == ""
+                or tag:lower():find(q, 1, true)
+                or ("tags"):find(q, 1, true)
+            then
+                tagnames[#tagnames + 1] = tag
+            end
+        end
+    end
+
+    table.sort(tagnames, function(a, b)
+        return a:lower() < b:lower()
+    end)
+
+    if #tagnames > 0 or q == "" then
+        local tagscollapsed =
+            q == ""
+            and toolactions.PropertyCategoryCollapsed.Tags == true
+
+        propertylist[#propertylist + 1] = {
+            Name = "Tags",
+            Category = "Tags",
+            ValueType = "",
+            Special = "Category",
+            Collapsed = tagscollapsed,
+        }
+
+        if not tagscollapsed then
+            for _, tag in tagnames do
+                propertylist[#propertylist + 1] = {
+                    Name = "Tag",
+                    Category = "Tags",
+                    ValueType = "string",
+                    Special = "Tag",
+                    TagName = tag,
+                    ReadOnly = true,
+                }
+            end
+
+            if q == "" then
+                propertylist[#propertylist + 1] = {
+                    Name = "Add Tag",
+                    Text = "+ Add Tag",
+                    Category = "Tags",
+                    ValueType = "",
+                    Special = "Action",
+                    OnClick = function(row)
+                        toolactions.OpenAddDialog("Tag", row)
+                    end,
+                }
+            end
         end
     end
 
@@ -5270,9 +6789,11 @@ function propertycontroller.Render()
 
             r.Root:SetAttribute("PropIndex", idx)
 
-            if p.Special == "Category" then
-                r.Root.BackgroundColor3 = theme.Panel2
-                r.Name.Position = UDim2.fromOffset(5, 0)
+            if p.Special == "Category" or p.Special == "Action" then
+                local isaction = p.Special == "Action"
+
+                r.Root.BackgroundColor3 = isaction and theme.Panel or theme.Panel2
+                r.Name.Position = UDim2.fromOffset(isaction and 24 or 5, 0)
                 r.Name.Size =
                     UDim2.fromOffset(
                         propertycontroller.GetCanvasWidth() - 10,
@@ -5280,10 +6801,11 @@ function propertycontroller.Render()
                     )
 
                 r.Name.Text =
-                    (p.Collapsed and "▶ " or "▼ ")
-                    .. p.Name
+                    isaction
+                    and p.Text
+                    or ((p.Collapsed and "▶ " or "▼ ") .. p.Name)
 
-                r.Name.TextColor3 = theme.Accent2
+                r.Name.TextColor3 = isaction and theme.Accent or theme.Accent2
                 r.Value.Visible = false
                 r.ExpandButton.Visible = false
                 r.BoolBox.Visible = false
@@ -5292,7 +6814,7 @@ function propertycontroller.Render()
                 r.DropButton.Visible = false
                 r.CategoryButton.Visible = true
                 r.Sep.Visible = false
-                r.Bottom.BackgroundColor3 = theme.Border
+                r.Bottom.BackgroundColor3 = isaction and theme.BorderSoft or theme.Border
             else
                 r.Root.BackgroundColor3 = theme.Panel
                 r.CategoryButton.Visible = false
@@ -5310,6 +6832,10 @@ function propertycontroller.Render()
                 local isbrickcolor = valuetype == "BrickColor"
                 local isenumitem = valuetype == "EnumItem"
                 local isinstance = valuetype == "Instance"
+                local istag = p.Special == "Tag"
+                local issequence =
+                    valuetype == "NumberSequence"
+                    or valuetype == "ColorSequence"
 
                 local expandable =
                     p.Special ~= "Component"
@@ -5385,15 +6911,30 @@ function propertycontroller.Render()
 
                 r.RefButton.Visible =
                     readable
-                    and isinstance
-                    and v ~= nil
+                    and (
+                        (isinstance and v ~= nil)
+                        or istag
+                    )
 
                 r.RefButton.Active =
                     r.RefButton.Visible
 
+                local reftext = istag and "✕" or "↗"
+
+                if r.RefButton.Text ~= reftext then
+                    r.RefButton.Text = reftext
+                end
+
                 local hasdropdown =
                     isenumitem
                     or isbrickcolor
+                    or issequence
+
+                local droptext = issequence and "…" or "▼"
+
+                if r.DropButton.Text ~= droptext then
+                    r.DropButton.Text = droptext
+                end
 
                 r.DropButton.Visible =
                     readable
@@ -5540,10 +7081,13 @@ function propertycontroller.Render()
     end
 end
 
-function treecontroller.SelectNode(node)
+function treecontroller.ApplyPrimary(node)
     propertycontroller.CloseDropdown()
     toolactions.CloseColorPicker()
     toolactions.ClosePropertyMenu()
+    if toolactions.CloseSequenceEditor then toolactions.CloseSequenceEditor() end
+    if toolactions.CloseBrickPalette then toolactions.CloseBrickPalette() end
+    if toolactions.CloseAttributeDialog then toolactions.CloseAttributeDialog() end
     selectednode = node
 
     runtimeutil.Disconnect(propertychangedconn)
@@ -5562,6 +7106,151 @@ function treecontroller.SelectNode(node)
     propertycontroller.Rebuild()
     propertycontroller.UpdateRowWidths()
     propertycontroller.Render()
+
+    if toolactions.UpdateSelectionVisual then
+        toolactions.UpdateSelectionVisual()
+    end
+end
+
+function treecontroller.SelectNode(node)
+    local sel = toolactions.Selection
+
+    table.clear(sel.Set)
+    table.clear(sel.List)
+
+    if node then
+        sel.Set[node] = true
+        sel.List[1] = node
+    end
+
+    sel.Anchor = node
+    treecontroller.ApplyPrimary(node)
+end
+
+function treecontroller.SelectNodes(nodes, primary)
+    local sel = toolactions.Selection
+
+    table.clear(sel.Set)
+    table.clear(sel.List)
+
+    for _, node in nodes do
+        if not sel.Set[node] then
+            sel.Set[node] = true
+            sel.List[#sel.List + 1] = node
+        end
+    end
+
+    primary = primary or sel.List[#sel.List]
+    treecontroller.ApplyPrimary(primary)
+end
+
+function treecontroller.ToggleNode(node)
+    local sel = toolactions.Selection
+
+    if sel.Set[node] then
+        sel.Set[node] = nil
+        table.remove(sel.List, table.find(sel.List, node))
+
+        if selectednode == node then
+            treecontroller.ApplyPrimary(sel.List[#sel.List])
+        end
+    else
+        sel.Set[node] = true
+        sel.List[#sel.List + 1] = node
+        sel.Anchor = node
+        treecontroller.ApplyPrimary(node)
+    end
+end
+
+function treecontroller.SelectRange(node)
+    local sel = toolactions.Selection
+    local from = sel.Anchor and table.find(visiblenodes, sel.Anchor)
+    local to = table.find(visiblenodes, node)
+
+    if not from or not to then
+        treecontroller.SelectNode(node)
+        return
+    end
+
+    local nodes = {}
+    local step = from <= to and 1 or -1
+
+    for i = from, to, step do
+        nodes[#nodes + 1] = visiblenodes[i]
+    end
+
+    treecontroller.SelectNodes(nodes, node)
+end
+
+function treecontroller.SelectAllVisible()
+    local nodes = {}
+
+    for _, node in visiblenodes do
+        if node.obj then
+            nodes[#nodes + 1] = node
+        end
+    end
+
+    if #nodes > 0 then
+        treecontroller.SelectNodes(nodes, selectednode and toolactions.Selection.Set[selectednode] and selectednode or nodes[1])
+    end
+end
+
+function treecontroller.RemoveFromSelection(node)
+    local sel = toolactions.Selection
+
+    if not sel.Set[node] then
+        return
+    end
+
+    sel.Set[node] = nil
+    table.remove(sel.List, table.find(sel.List, node))
+
+    if sel.Anchor == node then
+        sel.Anchor = sel.List[#sel.List]
+    end
+
+    if selectednode == node then
+        treecontroller.ApplyPrimary(sel.List[#sel.List])
+    end
+end
+
+function treecontroller.GetSelectedObjects()
+    local sel = toolactions.Selection
+    local objects = {}
+    local seen = {}
+
+    for _, node in sel.List do
+        local obj = node.obj
+
+        if typeof(obj) == "Instance" and obj ~= rawgame then
+            seen[obj] = true
+        end
+    end
+
+    for _, node in sel.List do
+        local obj = node.obj
+
+        if seen[obj] then
+            local covered = false
+            local parent = obj.Parent
+
+            while parent do
+                if seen[parent] then
+                    covered = true
+                    break
+                end
+
+                parent = parent.Parent
+            end
+
+            if not covered then
+                objects[#objects + 1] = obj
+            end
+        end
+    end
+
+    return objects
 end
 
 propsearch:GetPropertyChangedSignal("Text"):Connect(function()
@@ -5893,95 +7582,153 @@ function menucontroller.CopyObjectPath(obj)
     end
 end
 
-function menucontroller.DuplicateObject(obj)
-    if not obj then return end
+function menucontroller.RefreshParents(objects)
+    local done = {}
 
-    local oldarchivable = obj.Archivable
-    local clone
-
-    local ok = pcall(function()
-        obj.Archivable = true
-        clone = obj:Clone()
-        clone.Parent = obj.Parent
-    end)
-
-    pcall(function()
-        obj.Archivable = oldarchivable
-    end)
-
-    if ok and clone then
+    for _, obj in objects do
         local parentnode = obj.Parent and nodesbyobject[obj.Parent]
-        if parentnode and parentnode.loaded then
+
+        if parentnode and parentnode.loaded and not done[parentnode] then
+            done[parentnode] = true
             parentnode.loaded = false
             treecontroller.LoadChildren(parentnode)
         end
+    end
 
-        treecontroller.BuildVisible()
-        treecontroller.Render()
+    treecontroller.BuildVisible()
+    treecontroller.Render(true)
+end
+
+function menucontroller.CloneObject(obj)
+    local oldarchivable = obj.Archivable
+    local clone
+
+    pcall(function()
+        obj.Archivable = true
+        clone = obj:Clone()
+        obj.Archivable = oldarchivable
+    end)
+
+    return clone
+end
+
+function menucontroller.DuplicateObjects(objects)
+    local clones = {}
+
+    for _, obj in objects do
+        local clone = menucontroller.CloneObject(obj)
+
+        if clone and pcall(function() clone.Parent = obj.Parent end) then
+            clones[#clones + 1] = clone
+        end
+    end
+
+    if #clones > 0 then
+        menucontroller.RefreshParents(clones)
+        statuslabel.Text = ("Duplicated %d"):format(#clones)
     end
 end
 
 local cutbuffer = nil
-
-function menucontroller.CutObject(obj)
-    if not obj or obj == rawgame then return end
-
-    cutbuffer = {
-        Object = obj,
-        Parent = obj.Parent,
-        Mode = "Cut",
-    }
-
-    pcall(function()
-        obj.Parent = nil
-    end)
-
-    statuslabel.Text = "Cut: " .. obj.Name .. " • use Paste from Hierarchy"
-end
-
 local copybuffer = nil
 
-function menucontroller.CopyObject(obj)
-    if not obj or obj == rawgame then return end
+function menucontroller.CutObjects(objects)
+    if #objects == 0 then return end
 
-    local oldarchivable = obj.Archivable
-    local clone
+    cutbuffer = {Objects = objects}
+    copybuffer = nil
 
-    pcall(function()
-        obj.Archivable = true
-        clone = obj:Clone()
-        obj.Archivable = oldarchivable
-    end)
-
-    if clone then
-        copybuffer = {
-            Object = clone,
-            Source = obj,
-            Mode = "Copy",
-        }
-        statuslabel.Text = "Copied: " .. obj.Name
+    for _, obj in objects do
+        pcall(function()
+            obj.Parent = nil
+        end)
     end
+
+    statuslabel.Text = ("Cut %d • Ctrl+V to paste"):format(#objects)
+end
+
+function menucontroller.CopyObjects(objects)
+    local clones = {}
+
+    for _, obj in objects do
+        local clone = menucontroller.CloneObject(obj)
+
+        if clone then
+            clones[#clones + 1] = clone
+        end
+    end
+
+    if #clones > 0 then
+        copybuffer = {Objects = clones}
+        cutbuffer = nil
+        statuslabel.Text = ("Copied %d"):format(#clones)
+    end
+end
+
+function menucontroller.HasClipboard()
+    return (cutbuffer ~= nil and #cutbuffer.Objects > 0)
+        or (copybuffer ~= nil and #copybuffer.Objects > 0)
 end
 
 function menucontroller.PasteInto(target)
     if not target then return end
 
-    if cutbuffer and cutbuffer.Object then
-        local obj = cutbuffer.Object
-        pcall(function()
-            obj.Parent = target
-        end)
-        cutbuffer = nil
-        statuslabel.Text = "Pasted"
-    elseif copybuffer and copybuffer.Object then
-        local clone
-        pcall(function()
-            clone = copybuffer.Object:Clone()
-            clone.Parent = target
-        end)
-        if clone then
-            statuslabel.Text = "Pasted copy"
+    local pasted = {}
+
+    if cutbuffer then
+        for _, obj in cutbuffer.Objects do
+            if pcall(function() obj.Parent = target end) then
+                pasted[#pasted + 1] = obj
+            end
         end
+
+        cutbuffer = nil
+    elseif copybuffer then
+        for _, source in copybuffer.Objects do
+            local clone
+
+            if pcall(function()
+                clone = source:Clone()
+                clone.Parent = target
+            end) and clone then
+                pasted[#pasted + 1] = clone
+            end
+        end
+    end
+
+    if #pasted > 0 then
+        statuslabel.Text = ("Pasted %d"):format(#pasted)
+        menucontroller.RefreshParents(pasted)
+    end
+end
+
+function menucontroller.PasteIntoSelection()
+    local targets = {}
+
+    for _, node in toolactions.Selection.List do
+        if typeof(node.obj) == "Instance" then
+            targets[#targets + 1] = node.obj
+        end
+    end
+
+    for _, target in targets do
+        menucontroller.PasteInto(target)
+
+        if not menucontroller.HasClipboard() then
+            break
+        end
+    end
+end
+
+function menucontroller.DeleteObjects(objects)
+    for _, obj in objects do
+        pcall(function()
+            obj:Destroy()
+        end)
+    end
+
+    if #objects > 0 then
+        statuslabel.Text = ("Deleted %d"):format(#objects)
     end
 end
 
@@ -6018,16 +7765,6 @@ function menucontroller.RenameObject(node)
         treecontroller.BuildVisible()
         treecontroller.Render()
     end)
-end
-
-function menucontroller.DeleteObject(node)
-    if not node.obj or node.obj == rawgame then return end
-
-    pcall(function()
-        node.obj:Destroy()
-    end)
-
-    menucontroller.Close()
 end
 
 function treecontroller.ExpandAncestors(node)
@@ -6327,16 +8064,9 @@ function menucontroller.BuildHierarchyMenu(parent)
     menucontroller.CreateItem(parent, "Paste Into", function(node)
         if node.obj then
             menucontroller.PasteInto(node.obj)
-            node.loaded = false
-            treecontroller.LoadChildren(node)
-            treecontroller.BuildVisible()
-            treecontroller.Render()
         end
     end, {
-        disabled = not (
-            (cutbuffer and cutbuffer.Object)
-            or (copybuffer and copybuffer.Object)
-        )
+        disabled = not menucontroller.HasClipboard()
     })
 end
 
@@ -6351,16 +8081,19 @@ function menucontroller.Rebuild()
 
     local obj = contextnode.obj
 
-    menucontroller.CreateItem(contextmenu, "Cut", function(node)
-        menucontroller.CutObject(node.obj)
+    local selected = treecontroller.GetSelectedObjects()
+    local hasselection = #selected > 0
+
+    menucontroller.CreateItem(contextmenu, "Cut", function()
+        menucontroller.CutObjects(selected)
     end, {
-        disabled = not obj or obj == rawgame
+        disabled = not hasselection
     })
 
-    menucontroller.CreateItem(contextmenu, "Copy", function(node)
-        menucontroller.CopyObject(node.obj)
+    menucontroller.CreateItem(contextmenu, "Copy", function()
+        menucontroller.CopyObjects(selected)
     end, {
-        disabled = not obj or obj == rawgame
+        disabled = not hasselection
     })
 
     menucontroller.CreateItem(contextmenu, "Copy As", nil, {
@@ -6370,14 +8103,16 @@ function menucontroller.Rebuild()
 
     menucontroller.SeparatorLine(contextmenu)
 
-    menucontroller.CreateItem(contextmenu, "Duplicate", function(node)
-        menucontroller.DuplicateObject(node.obj)
+    menucontroller.CreateItem(contextmenu, "Duplicate", function()
+        menucontroller.DuplicateObjects(selected)
     end, {
-        disabled = not obj or obj == rawgame
+        disabled = not hasselection
     })
 
-    menucontroller.CreateItem(contextmenu, "Delete", menucontroller.DeleteObject, {
-        disabled = not obj or obj == rawgame
+    menucontroller.CreateItem(contextmenu, "Delete", function()
+        menucontroller.DeleteObjects(selected)
+    end, {
+        disabled = not hasselection
     })
 
     menucontroller.CreateItem(contextmenu, "Rename", menucontroller.RenameObject, {
@@ -6419,6 +8154,75 @@ function menucontroller.Rebuild()
         end)
     end
 
+    local firetargets = {
+        ClickDetector = {},
+        ProximityPrompt = {},
+        TouchTransmitter = {},
+    }
+    local hasfire = false
+
+    for _, node in toolactions.Selection.List do
+        local target = node.obj
+
+        if typeof(target) == "Instance" then
+            for classname, list in firetargets do
+                if target:IsA(classname) then
+                    list[#list + 1] = target
+                    hasfire = true
+                end
+            end
+        end
+    end
+
+    if hasfire then
+        menucontroller.SeparatorLine(contextmenu)
+
+        if #firetargets.ClickDetector > 0 then
+            menucontroller.CreateItem(contextmenu, "Fire ClickDetector", function()
+                for _, target in firetargets.ClickDetector do
+                    pcall(adapter.fireclickdetector, target)
+                end
+            end, {
+                disabled = adapter.fireclickdetector == nil
+            })
+        end
+
+        if #firetargets.ProximityPrompt > 0 then
+            menucontroller.CreateItem(contextmenu, "Fire ProximityPrompt", function()
+                for _, target in firetargets.ProximityPrompt do
+                    pcall(adapter.fireproximityprompt, target)
+                end
+            end, {
+                disabled = adapter.fireproximityprompt == nil
+            })
+        end
+
+        if #firetargets.TouchTransmitter > 0 then
+            menucontroller.CreateItem(contextmenu, "Fire TouchTransmitter", function()
+                local character = localplayer and localplayer.Character
+                local root = character and (
+                    character:FindFirstChild("HumanoidRootPart")
+                    or character.PrimaryPart
+                )
+
+                if not root then
+                    return
+                end
+
+                for _, target in firetargets.TouchTransmitter do
+                    local part = target.Parent
+
+                    if part and part:IsA("BasePart") then
+                        pcall(adapter.firetouchinterest, root, part, 0)
+                        task.wait()
+                        pcall(adapter.firetouchinterest, root, part, 1)
+                    end
+                end
+            end, {
+                disabled = adapter.firetouchinterest == nil
+            })
+        end
+    end
 end
 
 function menucontroller.Open(node, screenposition)
@@ -6485,6 +8289,914 @@ uis.InputBegan:Connect(function(input)
     end
 end)
 
+toolactions.Shortcuts = {
+    [Enum.KeyCode.C] = function()
+        menucontroller.CopyObjects(treecontroller.GetSelectedObjects())
+    end,
+    [Enum.KeyCode.X] = function()
+        menucontroller.CutObjects(treecontroller.GetSelectedObjects())
+    end,
+    [Enum.KeyCode.V] = function()
+        menucontroller.PasteIntoSelection()
+    end,
+    [Enum.KeyCode.D] = function()
+        menucontroller.DuplicateObjects(treecontroller.GetSelectedObjects())
+    end,
+    [Enum.KeyCode.A] = function()
+        treecontroller.SelectAllVisible()
+        treecontroller.Render()
+    end,
+}
+
+uis.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then
+        return
+    end
+
+    if not rootgui.Parent or not main.Visible or uis:GetFocusedTextBox() then
+        return
+    end
+
+    if toolactions.ViewerUI.Overlay.Visible
+        or (toolactions.Settings.Frame and toolactions.Settings.Frame.Visible)
+        or (toolactions.CreditsFrame and toolactions.CreditsFrame.Visible)
+        or not toolactions.PointInside(treescroll, uis:GetMouseLocation())
+    then
+        return
+    end
+
+    local ctrl = uis:IsKeyDown(Enum.KeyCode.LeftControl) or uis:IsKeyDown(Enum.KeyCode.RightControl)
+
+    if ctrl then
+        local action = toolactions.Shortcuts[input.KeyCode]
+
+        if action then
+            action()
+        end
+    elseif input.KeyCode == Enum.KeyCode.Delete then
+        menucontroller.DeleteObjects(treecontroller.GetSelectedObjects())
+    end
+end)
+
+toolactions.Settings = {
+    Path = "Explorer/settings.json",
+    Values = {
+        ClickPartToSelect = false,
+        ClickUIToSelect = false,
+    },
+    Toggles = {},
+}
+
+toolactions.Settings.Load = function()
+    local raw = cachestore.Read(toolactions.Settings.Path)
+
+    if not raw then
+        return
+    end
+
+    local ok, decoded = pcall(httpservice.JSONDecode, httpservice, raw)
+
+    if not ok or type(decoded) ~= "table" then
+        return
+    end
+
+    for key in toolactions.Settings.Values do
+        if type(decoded[key]) == "boolean" then
+            toolactions.Settings.Values[key] = decoded[key]
+        end
+    end
+
+    if type(decoded.SaveOptions) == "table" then
+        for name, value in decoded.SaveOptions do
+            local def = toolactions.Settings.OptionDefs[name]
+
+            if def then
+                local expected =
+                    def.Type == "bool" and "boolean"
+                    or def.Type == "number" and "number"
+                    or "string"
+
+                if type(value) == expected then
+                    toolactions.Settings.SaveOptions[name] = value
+                end
+            end
+        end
+    end
+end
+
+toolactions.Settings.Save = function()
+    local payload = {
+        SaveOptions = toolactions.Settings.SaveOptions or {},
+    }
+
+    for key, value in toolactions.Settings.Values do
+        payload[key] = value
+    end
+
+    local ok, encoded = pcall(
+        httpservice.JSONEncode,
+        httpservice,
+        payload
+    )
+
+    if ok then
+        cachestore.Write(toolactions.Settings.Path, encoded)
+    end
+end
+
+toolactions.Settings.Frame = uifactory.Create("Frame", {
+    Name = "SettingsPage",
+    Visible = false,
+    BackgroundColor3 = theme.Panel,
+    BorderSizePixel = 0,
+    Position = UDim2.fromOffset(0, 28),
+    Size = UDim2.new(1, 0, 1, -28),
+    Active = true,
+    ZIndex = 60,
+}, main)
+
+do
+    local header = uifactory.Create("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        BackgroundColor3 = theme.Panel2,
+        BorderSizePixel = 0,
+        ZIndex = 61,
+    }, toolactions.Settings.Frame)
+
+    local title = uifactory.Text(header, "Settings", 16)
+    title.Position = UDim2.fromOffset(8, 0)
+    title.Size = UDim2.new(1, -16, 1, 0)
+    title.ZIndex = 62
+end
+
+toolactions.Settings.Content = uifactory.Create("ScrollingFrame", {
+    Name = "Content",
+    Position = UDim2.fromOffset(0, 28),
+    Size = UDim2.new(1, 0, 1, -28),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 7,
+    ScrollBarImageColor3 = Color3.fromRGB(92, 92, 92),
+    CanvasSize = UDim2.fromOffset(0, 290),
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ElasticBehavior = Enum.ElasticBehavior.Never,
+    ZIndex = 61,
+}, toolactions.Settings.Frame)
+
+toolactions.Settings.CreateSection = function(text, y)
+    local label = uifactory.Text(toolactions.Settings.Content, text, 15)
+    label.Position = UDim2.fromOffset(12, y)
+    label.Size = UDim2.new(1, -24, 0, 18)
+    label.TextColor3 = theme.Accent2
+    label.ZIndex = 62
+
+    uifactory.Create("Frame", {
+        Position = UDim2.fromOffset(12, y + 20),
+        Size = UDim2.new(1, -24, 0, 1),
+        BackgroundColor3 = theme.BorderSoft,
+        BorderSizePixel = 0,
+        ZIndex = 62,
+    }, toolactions.Settings.Content)
+end
+
+toolactions.Settings.RefreshToggle = function(key)
+    local toggle = toolactions.Settings.Toggles[key]
+
+    if not toggle then
+        return
+    end
+
+    local enabled = toolactions.Settings.Values[key] == true
+
+    toggle.Box.BackgroundColor3 =
+        enabled
+        and Color3.fromRGB(238, 238, 238)
+        or Color3.fromRGB(35, 37, 41)
+
+    toggle.Check.Text = enabled and "✓" or ""
+end
+
+toolactions.Settings.CreateToggle = function(key, labeltext, y)
+    local row = uifactory.Create("TextButton", {
+        Position = UDim2.fromOffset(6, y),
+        Size = UDim2.new(1, -12, 0, 28),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 71,
+    }, toolactions.Settings.Content)
+    uifactory.Round(row, 4)
+
+    local box = uifactory.Create("Frame", {
+        Position = UDim2.fromOffset(8, 5),
+        Size = UDim2.fromOffset(17, 17),
+        BackgroundColor3 = Color3.fromRGB(35, 37, 41),
+        BorderSizePixel = 0,
+        ZIndex = 72,
+    }, row)
+    uifactory.Round(box, 1)
+    uifactory.Stroke(box, Color3.fromRGB(105, 108, 114))
+
+    local check = uifactory.Create("TextLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        TextColor3 = Color3.fromRGB(25, 25, 25),
+        TextSize = 16,
+        Font = Enum.Font.SourceSansBold,
+        ZIndex = 73,
+    }, box)
+
+    local label = uifactory.Text(row, labeltext, 16)
+    label.Position = UDim2.fromOffset(34, 0)
+    label.Size = UDim2.new(1, -40, 1, 0)
+    label.ZIndex = 72
+
+    row.MouseEnter:Connect(function()
+        row.BackgroundTransparency = 0
+        row.BackgroundColor3 = theme.Hover
+    end)
+
+    row.MouseLeave:Connect(function()
+        row.BackgroundTransparency = 1
+    end)
+
+    row.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch
+        then
+            return
+        end
+
+        toolactions.Settings.Values[key] = not toolactions.Settings.Values[key]
+        toolactions.Settings.RefreshToggle(key)
+        toolactions.Settings.Save()
+    end)
+
+    toolactions.Settings.Toggles[key] = {
+        Row = row,
+        Box = box,
+        Check = check,
+    }
+
+    toolactions.Settings.RefreshToggle(key)
+end
+
+toolactions.Settings.CreateSection("General", 8)
+toolactions.Settings.CreateToggle("ClickPartToSelect", "Click Part to Select", 34)
+toolactions.Settings.CreateToggle("ClickUIToSelect", "Click UI to Select", 64)
+
+toolactions.Settings.CreateSection("SaveInstance", 108)
+
+toolactions.Settings.SaveButton = uifactory.Create("TextButton", {
+    Position = UDim2.fromOffset(12, 136),
+    Size = UDim2.new(1, -24, 0, 30),
+    BackgroundColor3 = theme.Selected,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Save Game",
+    TextColor3 = theme.Text,
+    TextSize = 16,
+    Font = Enum.Font.SourceSans,
+    ZIndex = 62,
+}, toolactions.Settings.Content)
+uifactory.Round(toolactions.Settings.SaveButton, 4)
+
+toolactions.Settings.ResetButton =uifactory.Create("TextButton", {
+    Position = UDim2.fromOffset(12, 216),
+    Size = UDim2.new(1, -24, 0, 24),
+    BackgroundColor3 = theme.Panel2,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Reset All Options",
+    TextColor3 = theme.Dim,
+    TextSize = 14,
+    Font = Enum.Font.SourceSans,
+    ZIndex = 62,
+}, toolactions.Settings.Content)
+uifactory.Round(toolactions.Settings.ResetButton, 4)
+
+toolactions.Settings.SaveButton.MouseEnter:Connect(function()
+    if not toolactions.Settings.SaveBusy then
+        toolactions.Settings.SaveButton.BackgroundColor3 = Color3.fromRGB(58, 100, 135)
+    end
+end)
+
+toolactions.Settings.SaveButton.MouseLeave:Connect(function()
+    toolactions.Settings.SaveButton.BackgroundColor3 = theme.Selected
+end)
+
+toolactions.Settings.ResetButton.MouseEnter:Connect(function()
+    toolactions.Settings.ResetButton.BackgroundColor3 = theme.Hover
+end)
+
+toolactions.Settings.ResetButton.MouseLeave:Connect(function()
+    toolactions.Settings.ResetButton.BackgroundColor3 = theme.Panel2
+end)
+
+toolactions.Settings.SaveOptions = {}
+toolactions.Settings.OptionRefreshers = {}
+toolactions.Settings.OptionDefs = {}
+
+toolactions.Settings.OptionGroups = {
+    {"", {
+        {Name = "noscripts", Type = "bool", Default = false},
+    }},
+}
+
+toolactions.Settings.GetOption = function(def)
+    local value = toolactions.Settings.SaveOptions[def.Name]
+
+    if value == nil then
+        return def.Default
+    end
+
+    return value
+end
+
+toolactions.Settings.SetOption = function(def, value)
+    local options = toolactions.Settings.SaveOptions
+
+    if value == nil or value == "" or value == def.Default then
+        options[def.Name] = nil
+    else
+        options[def.Name] = value
+    end
+
+    toolactions.Settings.Save()
+
+    for _, refresh in toolactions.Settings.OptionRefreshers do
+        refresh()
+    end
+end
+
+toolactions.Settings.CreateOptionToggle = function(def, y)
+    local row = uifactory.Create("TextButton", {
+        Position = UDim2.fromOffset(6, y),
+        Size = UDim2.new(1, -12, 0, 28),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 71,
+    }, toolactions.Settings.Content)
+    uifactory.Round(row, 4)
+
+    local box = uifactory.Create("Frame", {
+        Position = UDim2.fromOffset(8, 5),
+        Size = UDim2.fromOffset(17, 17),
+        BackgroundColor3 = Color3.fromRGB(35, 37, 41),
+        BorderSizePixel = 0,
+        ZIndex = 72,
+    }, row)
+    uifactory.Round(box, 1)
+    uifactory.Stroke(box, Color3.fromRGB(105, 108, 114))
+
+    local check = uifactory.Create("TextLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        TextColor3 = Color3.fromRGB(25, 25, 25),
+        TextSize = 16,
+        Font = Enum.Font.SourceSansBold,
+        ZIndex = 73,
+    }, box)
+
+    local label = uifactory.Text(row, def.Name, 16)
+    label.Position = UDim2.fromOffset(34, 0)
+    label.Size = UDim2.new(1, -40, 1, 0)
+    label.ZIndex = 72
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+
+    row.MouseEnter:Connect(function()
+        row.BackgroundTransparency = 0
+        row.BackgroundColor3 = theme.Hover
+    end)
+
+    row.MouseLeave:Connect(function()
+        row.BackgroundTransparency = 1
+    end)
+
+    row.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch
+        then
+            return
+        end
+
+        toolactions.Settings.SetOption(def, not toolactions.Settings.GetOption(def))
+    end)
+
+    local function refresh()
+        local enabled = toolactions.Settings.GetOption(def) == true
+
+        box.BackgroundColor3 =
+            enabled
+            and Color3.fromRGB(238, 238, 238)
+            or Color3.fromRGB(35, 37, 41)
+
+        check.Text = enabled and "✓" or ""
+
+        label.TextColor3 =
+            toolactions.Settings.SaveOptions[def.Name] ~= nil
+            and theme.Accent2
+            or theme.Text
+    end
+
+    table.insert(toolactions.Settings.OptionRefreshers, refresh)
+    refresh()
+end
+
+toolactions.Settings.CreateOptionValue = function(def, y)
+    local label = uifactory.Text(toolactions.Settings.Content, def.Name, 16)
+    label.Position = UDim2.fromOffset(14, y)
+    label.Size = UDim2.new(1, -150, 0, 28)
+    label.ZIndex = 62
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local control
+
+    if def.Type == "choice" then
+        control = uifactory.Create("TextButton", {
+            Position = UDim2.new(1, -126, 0, y + 2),
+            Size = UDim2.fromOffset(114, 24),
+            BackgroundColor3 = Color3.fromRGB(29, 29, 29),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = "",
+            TextColor3 = theme.Text,
+            TextSize = 15,
+            Font = Enum.Font.SourceSans,
+            ZIndex = 62,
+        }, toolactions.Settings.Content)
+
+        control.MouseButton1Click:Connect(function()
+            local current = tostring(toolactions.Settings.GetOption(def))
+            local nextindex = 1
+
+            for i, choice in def.Choices do
+                if choice == current then
+                    nextindex = i % #def.Choices + 1
+                    break
+                end
+            end
+
+            toolactions.Settings.SetOption(def, def.Choices[nextindex])
+        end)
+    else
+        control = uifactory.Create("TextBox", {
+            Position = UDim2.new(1, -126, 0, y + 2),
+            Size = UDim2.fromOffset(114, 24),
+            BackgroundColor3 = Color3.fromRGB(29, 29, 29),
+            BorderSizePixel = 0,
+            ClearTextOnFocus = false,
+            PlaceholderText =
+                def.Default ~= nil
+                and tostring(def.Default)
+                or def.Placeholder
+                or "default",
+            PlaceholderColor3 = Color3.fromRGB(110, 110, 110),
+            Text = "",
+            TextColor3 = theme.Text,
+            TextSize = 15,
+            Font = Enum.Font.SourceSans,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 62,
+        }, toolactions.Settings.Content)
+        uifactory.Create("UIPadding", {
+            PaddingLeft = UDim.new(0, 5),
+            PaddingRight = UDim.new(0, 5),
+        }, control)
+
+        control.FocusLost:Connect(function()
+            local text = runtimeutil.Trim(control.Text)
+
+            if text == "" then
+                toolactions.Settings.SetOption(def, nil)
+            elseif def.Type == "number" then
+                local number = tonumber(text)
+
+                if number then
+                    toolactions.Settings.SetOption(def, number)
+                else
+                    toolactions.Settings.SetOption(def, toolactions.Settings.SaveOptions[def.Name])
+                end
+            else
+                toolactions.Settings.SetOption(def, text)
+            end
+        end)
+    end
+
+    uifactory.Round(control, 4)
+    uifactory.Stroke(control, theme.BorderSoft)
+
+    local function refresh()
+        local override = toolactions.Settings.SaveOptions[def.Name]
+
+        if def.Type == "choice" then
+            control.Text = tostring(toolactions.Settings.GetOption(def))
+        elseif not control:IsFocused() then
+            control.Text = override ~= nil and tostring(override) or ""
+        end
+
+        label.TextColor3 =
+            override ~= nil
+            and theme.Accent2
+            or theme.Text
+    end
+
+    table.insert(toolactions.Settings.OptionRefreshers, refresh)
+    refresh()
+end
+
+do
+    local y = 136
+
+    for _, group in toolactions.Settings.OptionGroups do
+        if group[1] ~= "" then
+            toolactions.Settings.CreateSection(group[1], y)
+            y += 28
+        end
+
+        for _, def in group[2] do
+            toolactions.Settings.OptionDefs[def.Name] = def
+
+            if def.Type == "bool" then
+                toolactions.Settings.CreateOptionToggle(def, y)
+            else
+                toolactions.Settings.CreateOptionValue(def, y)
+            end
+
+            y += 28
+        end
+
+        y += 8
+    end
+
+    toolactions.Settings.SaveButton.Position = UDim2.fromOffset(12, y)
+    toolactions.Settings.ResetButton.Position = UDim2.fromOffset(12, y + 36)
+
+    toolactions.Settings.Content.CanvasSize = UDim2.fromOffset(0, y + 36 + 24 + 12)
+end
+
+toolactions.Settings.ResetButton.MouseButton1Click:Connect(function()
+    table.clear(toolactions.Settings.SaveOptions)
+    toolactions.Settings.Save()
+
+    for _, refresh in toolactions.Settings.OptionRefreshers do
+        refresh()
+    end
+end)
+
+toolactions.Settings.BuildSaveOptions = function()
+    local options = {}
+
+    for name, value in toolactions.Settings.SaveOptions do
+        if name == "CompressionMode" and value == "false" then
+            options[name] = false
+        elseif name == "IgnoreProperties" then
+            local list = {}
+
+            for token in tostring(value):gmatch("[^,]+") do
+                local trimmed = runtimeutil.Trim(token)
+
+                if trimmed ~= "" then
+                    list[#list + 1] = trimmed
+                end
+            end
+
+            if #list > 0 then
+                options[name] = list
+            end
+        else
+            options[name] = value
+        end
+    end
+
+    return options
+end
+
+toolactions.Settings.SaveInstance = function()
+    local settingsstate = toolactions.Settings
+
+    if settingsstate.SaveBusy or not adapter.saveinstance then
+        return
+    end
+
+    settingsstate.SaveBusy = true
+    settingsstate.SaveButton.Text = "Saving..."
+
+    task.spawn(function()
+        local options = settingsstate.BuildSaveOptions()
+        local filename = ("Place_%s_%s"):format(
+            tostring(rawgame.PlaceId),
+            os.date("%d-%m-%Y_%H-%M-%S")
+        )
+
+        local ok, err = pcall(adapter.saveinstance, rawgame, filename, options)
+
+        if not ok then
+            warn("[Explorer] saveinstance failed: " .. tostring(err))
+        end
+
+        settingsstate.SaveBusy = false
+
+        if settingsstate.SaveButton and settingsstate.SaveButton.Parent then
+            settingsstate.SaveButton.Text = "Save Game"
+        end
+    end)
+end
+
+toolactions.Settings.SaveButton.MouseButton1Click:Connect(toolactions.Settings.SaveInstance)
+
+toolactions.Settings.Close = function()
+    toolactions.Settings.Frame.Visible = false
+    settings:SetAttribute("Active", false)
+    settings.BackgroundColor3 = Color3.fromRGB(34, 34, 34)
+    settingsicon.ImageColor3 = Color3.fromRGB(235, 235, 235)
+end
+
+toolactions.Settings.Open = function()
+    propertycontroller.CloseDropdown()
+    toolactions.CloseColorPicker()
+
+    if toolactions.ClosePropertyMenu then
+        toolactions.ClosePropertyMenu()
+    end
+
+    menucontroller.Close()
+
+    if toolactions.CloseCredits then
+        toolactions.CloseCredits()
+    end
+
+    toolactions.Settings.Frame.Visible = true
+    settings:SetAttribute("Active", true)
+    settings.BackgroundColor3 = Color3.fromRGB(50, 53, 59)
+    settingsicon.ImageColor3 = theme.Accent
+end
+
+toolactions.Settings.Load()
+
+for key in toolactions.Settings.Toggles do
+    toolactions.Settings.RefreshToggle(key)
+end
+
+for _, refresh in toolactions.Settings.OptionRefreshers do
+    refresh()
+end
+
+settings.MouseButton1Click:Connect(function()
+    if toolactions.Settings.Frame.Visible then
+        toolactions.Settings.Close()
+    else
+        toolactions.Settings.Open()
+    end
+end)
+
+toolactions.SelectionVisual = {}
+
+toolactions.SelectionVisual.Box = uifactory.Create("SelectionBox", {
+    Name = "SelectionBox",
+    Color3 = theme.Accent,
+    LineThickness = 0.03,
+    SurfaceColor3 = theme.Accent,
+    SurfaceTransparency = 0.85,
+}, rootgui)
+
+toolactions.SelectionVisual.Outline = uifactory.Create("Frame", {
+    Name = "SelectionOutline",
+    Visible = false,
+    Active = false,
+    BackgroundColor3 = theme.Accent,
+    BackgroundTransparency = 0.85,
+    BorderSizePixel = 0,
+    ZIndex = 60,
+}, rootgui)
+
+uifactory.Create("UIStroke", {
+    Color = theme.Accent,
+    Thickness = 2,
+    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+}, toolactions.SelectionVisual.Outline)
+
+toolactions.UpdateSelectionVisual = function()
+    local visual = toolactions.SelectionVisual
+    local obj = selectednode and selectednode.obj
+    local isinstance = typeof(obj) == "Instance"
+
+    local adornee = nil
+
+    if isinstance
+        and (obj:IsA("BasePart") or obj:IsA("Model"))
+        and not obj:IsA("Terrain")
+        and obj:IsDescendantOf(workspace)
+    then
+        adornee = obj
+    end
+
+    if visual.Box.Adornee ~= adornee then
+        visual.Box.Adornee = adornee
+    end
+
+    local showoutline = false
+
+    if isinstance
+        and obj:IsA("GuiObject")
+        and obj.Visible
+        and not obj:IsDescendantOf(rootgui)
+    then
+        local layer = obj:FindFirstAncestorWhichIsA("LayerCollector")
+
+        if layer and layer:IsA("ScreenGui") and layer.Enabled then
+            local pos = obj.AbsolutePosition
+
+            if not layer.IgnoreGuiInset then
+                pos += (dockcontroller.GetGuiInsets())
+            end
+
+            visual.Outline.Position = UDim2.fromOffset(pos.X, pos.Y)
+            visual.Outline.Size = UDim2.fromOffset(
+                obj.AbsoluteSize.X,
+                obj.AbsoluteSize.Y
+            )
+            showoutline = true
+        end
+    end
+
+    if visual.Outline.Visible ~= showoutline then
+        visual.Outline.Visible = showoutline
+    end
+end
+
+toolactions.SelectionVisual.Connection = runservice.Heartbeat:Connect(function()
+    if not rootgui.Parent then
+        toolactions.SelectionVisual.Connection:Disconnect()
+        return
+    end
+
+    toolactions.UpdateSelectionVisual()
+end)
+
+toolactions.PointInside = function(gui, point)
+    if not gui or not gui.Visible then
+        return false
+    end
+
+    local pos = gui.AbsolutePosition
+    local size = gui.AbsoluteSize
+
+    return point.X >= pos.X
+        and point.X <= pos.X + size.X
+        and point.Y >= pos.Y
+        and point.Y <= pos.Y + size.Y
+end
+
+toolactions.IsPointerOverExplorer = function(point)
+    return toolactions.PointInside(main, point)
+        or toolactions.PointInside(toolactions.ColorPicker.Frame, point)
+        or toolactions.PointInside(contextmenu, point)
+        or toolactions.PointInside(submenu, point)
+        or (
+            toolactions.ViewerUI.Overlay.Visible
+            and toolactions.PointInside(toolactions.ViewerUI.Window, point)
+        )
+end
+
+toolactions.IsVisualGui = function(obj)
+    if obj.BackgroundTransparency < 1 then
+        return true
+    end
+
+    if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+        return obj.Text ~= "" and obj.TextTransparency < 1
+    end
+
+    if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+        return obj.Image ~= "" and obj.ImageTransparency < 1
+    end
+
+    return obj:IsA("ViewportFrame") or obj:IsA("VideoFrame")
+end
+
+toolactions.GetGuiAtPoint = function(point)
+    local playergui = localplayer and localplayer:FindFirstChildOfClass("PlayerGui")
+
+    if not playergui then
+        return nil
+    end
+
+    local inset = dockcontroller.GetGuiInsets()
+    local best = nil
+    local bestorder = nil
+
+    local function consider(objects, ignoreinset)
+        for _, obj in objects do
+            if not obj:IsDescendantOf(rootgui) and toolactions.IsVisualGui(obj) then
+                local layer = obj:FindFirstAncestorWhichIsA("LayerCollector")
+
+                if layer
+                    and layer:IsA("ScreenGui")
+                    and layer.IgnoreGuiInset == ignoreinset
+                then
+                    if best == nil or layer.DisplayOrder > bestorder then
+                        best = obj
+                        bestorder = layer.DisplayOrder
+                    end
+
+                    return
+                end
+            end
+        end
+    end
+
+    local okstandard, standard = pcall(
+        playergui.GetGuiObjectsAtPosition,
+        playergui,
+        point.X - inset.X,
+        point.Y - inset.Y
+    )
+
+    if okstandard then
+        consider(standard, false)
+    end
+
+    local okignore, ignoring = pcall(
+        playergui.GetGuiObjectsAtPosition,
+        playergui,
+        point.X,
+        point.Y
+    )
+
+    if okignore then
+        consider(ignoring, true)
+    end
+
+    return best
+end
+
+toolactions.GetPartAtPoint = function(point)
+    local camera = workspace.CurrentCamera
+
+    if not camera then
+        return nil
+    end
+
+    local ray = camera:ViewportPointToRay(point.X, point.Y)
+    local result = workspace:Raycast(ray.Origin, ray.Direction * 5000)
+
+    return result and result.Instance
+end
+
+uis.InputBegan:Connect(function(input, processed)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+        return
+    end
+
+    if not rootgui.Parent then
+        return
+    end
+
+    local mouse = uis:GetMouseLocation()
+    local values = toolactions.Settings.Values
+
+    if not (values.ClickPartToSelect or values.ClickUIToSelect) then
+        return
+    end
+
+    if toolactions.IsPointerOverExplorer(mouse) then
+        return
+    end
+
+    if toolactions.Settings.Frame.Visible then
+        toolactions.Settings.Close()
+    end
+
+    if toolactions.CreditsFrame and toolactions.CreditsFrame.Visible then
+        toolactions.CloseCredits()
+    end
+
+    if values.ClickUIToSelect then
+        local gui = toolactions.GetGuiAtPoint(mouse)
+
+        if gui then
+            toolactions.JumpToInstance(gui)
+            return
+        end
+    end
+
+    if values.ClickPartToSelect and not processed then
+        local part = toolactions.GetPartAtPoint(mouse)
+
+        if part then
+            toolactions.JumpToInstance(part)
+        end
+    end
+end)
+
 function treecontroller.GetDisplay(node)
     if node.pseudo then
         return node.name, node.className
@@ -6517,9 +9229,17 @@ function treecontroller.HasChildren(node)
     return node.hasChildren
 end
 
-local current_studio_icon_base =
-    "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/" ..
-    "studio-svg-textures/Shared/InsertableObjects/Dark/Standard/"
+function iconcontroller.DownloadIcon(classname: string): string?
+    for _, source in studioassetsources do
+        local bytes = adapter:HttpBytes(source.Icons .. classname .. ".png")
+
+        if type(bytes) == "string" and #bytes > 8 and bytes:sub(2, 4) == "PNG" then
+            return bytes
+        end
+    end
+
+    return nil
+end
 
 local currentstudioiconcache = {}
 local currentstudioiconpending = {}
@@ -6633,8 +9353,7 @@ function iconcontroller.Resolve(classname: string): string?
     end
 
     if not asset then
-        local url = current_studio_icon_base .. classname .. ".png"
-        local bytes = adapter:HttpBytes(url)
+        local bytes = iconcontroller.DownloadIcon(classname)
 
         local ispng =
             type(bytes) == "string"
@@ -6749,7 +9468,15 @@ function iconcontroller.Prewarm()
             local classname = classnames[idx]
             iconwarmupstats.Current = classname
 
-            local asset = iconcontroller.Resolve(classname)
+            local asset
+
+            if currentstudioiconcache[classname]
+                or iconcontroller.FileExists(iconcontroller.GetCurrentPath(classname))
+            then
+                asset = true
+            else
+                asset = iconcontroller.Resolve(classname)
+            end
 
             if asset then
                 iconwarmupstats.Ready += 1
@@ -6824,8 +9551,7 @@ function iconcontroller.Queue(classname, imagelabel)
         end
 
         if not asset then
-            local url = current_studio_icon_base .. classname .. ".png"
-            local bytes = adapter:HttpBytes(url)
+            local bytes = iconcontroller.DownloadIcon(classname)
 
             local ispng =
                 type(bytes) == "string"
@@ -7355,8 +10081,9 @@ function treecontroller.Render(force: boolean?)
             r.Root.Visible = true
             r.Root.Position = UDim2.fromOffset(0, (idx - 1) * row_h)
             r.Root:SetAttribute("NodeIndex", idx)
-            r.Root.BackgroundTransparency = node == selectednode and 0 or 1
-            r.Root.BackgroundColor3 = node == selectednode and theme.Selected or theme.Panel
+            local isselected = toolactions.Selection.Set[node] == true
+            r.Root.BackgroundTransparency = isselected and 0 or 1
+            r.Root.BackgroundColor3 = isselected and theme.Selected or theme.Panel
 
             local name, classname = treecontroller.GetDisplay(node)
             local depth = math.max(0, node.depth or 0)
@@ -7402,7 +10129,17 @@ for _, r in treerows do
         local idx = r.Root:GetAttribute("NodeIndex")
         local node = idx and visiblenodes[idx]
         if node then
-            treecontroller.SelectNode(node)
+            local ctrl = uis:IsKeyDown(Enum.KeyCode.LeftControl) or uis:IsKeyDown(Enum.KeyCode.RightControl)
+            local shift = uis:IsKeyDown(Enum.KeyCode.LeftShift) or uis:IsKeyDown(Enum.KeyCode.RightShift)
+
+            if shift then
+                treecontroller.SelectRange(node)
+            elseif ctrl then
+                treecontroller.ToggleNode(node)
+            else
+                treecontroller.SelectNode(node)
+            end
+
             treecontroller.Render()
         end
     end)
@@ -7412,6 +10149,11 @@ for _, r in treerows do
         local node = idx and visiblenodes[idx]
 
         if node then
+            if not toolactions.Selection.Set[node] then
+                treecontroller.SelectNode(node)
+                treecontroller.Render()
+            end
+
             local pos = uis:GetMouseLocation()
             menucontroller.Open(node, pos)
         end
@@ -7581,9 +10323,7 @@ rawgame.DescendantRemoving:Connect(function(obj)
 
     nodesbyobject[obj] = nil
 
-    if selectednode == node then
-        treecontroller.SelectNode(nil)
-    end
+    treecontroller.RemoveFromSelection(node)
 
     toolactions.QueueLiveTreeRefresh(parentnode)
 end)
